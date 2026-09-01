@@ -1,0 +1,36 @@
+{
+  "name": "xiaozhi-local-server",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Local XiaoZhi OTA + WebSocket server with a Next.js dashboard",
+  "scripts": {
+    "dev": "tsx watch server.ts",
+    "build": "next build",
+    "start": "NODE_ENV=production tsx server.ts",
+    "lint": "eslint"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "next": "16.3.4",
+    "react": "19.2.8",
+    "react-dom": "19.2.8",
+    "tsx": "^4.23.13",
+    "ws": "^8.21.3"
+  },
+  "devDependencies": {
+    "@tailwindcss/postcss": "^4",
+    "@types/node": "^20",
+    "@types/react": "^19",
+    "@types/react-dom": "^19",
+    "@types/ws": "^8.18.1",
+    "class-variance-authority": "^0.7.1",
+    "clsx": "^2.1.1",
+    "eslint": "^9",
+    "eslint-config-next": "16.3.4",
+    "tailwind-merge": "^3.6.0",
+    "tailwindcss": "^4",
+    "typescript": "^5"
+  }
+}
