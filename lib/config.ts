@@ -36,6 +36,10 @@ export function getOtaUrl(config: ServerConfig = getServerConfig()): string {
   return `http://${config.advertiseHost}:${config.otaPort}/xiaozhi/ota/`;
 }
 
+export function getListenStreamUrl(config: ServerConfig = getServerConfig()): string {
+  return `ws://${config.advertiseHost}:${config.wsPort}/listen-stream`;
+}
+
 export function getUiUrl(config: ServerConfig = getServerConfig()): string {
   return `http://${config.advertiseHost}:${config.uiPort}/`;
 }

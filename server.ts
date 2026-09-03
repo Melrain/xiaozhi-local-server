@@ -2,8 +2,10 @@ import { createServer } from "node:http";
 import next from "next";
 import { BIND_HOST, getServerConfig, getOtaUrl, getUiUrl, getWebsocketUrl } from "./lib/config";
 import { loadLocalEnv } from "./lib/load-env";
+import { startDenoise } from "./lib/denoise";
 import { startOtaServer } from "./lib/ota-server";
 import { startWebsocketServer } from "./lib/ws-server";
+import { startWorkers, tryServeWorker } from "./lib/worker-static";
 
 loadLocalEnv();
 
@@ -20,6 +22,7 @@ async function main(): Promise<void> {
   await app.prepare();
 
   const uiServer = createServer((req, res) => {
+    if (tryServeWorker(req, res)) return;
     void handle(req, res);
   });
 
@@ -30,12 +33,17 @@ async function main(): Promise<void> {
 
   startOtaServer();
   startWebsocketServer();
+  const workerUrls = startWorkers();
+  void startDenoise();
 
   console.log("");
   console.log("xiaozhi-local-server");
   console.log(`  UI  ${getUiUrl(config)}  (bind ${BIND_HOST}:${config.uiPort})`);
   console.log(`  OTA ${getOtaUrl(config)}  (bind ${BIND_HOST}:${config.otaPort})`);
   console.log(`  WS  ${getWebsocketUrl(config)}  (bind ${BIND_HOST}:${config.wsPort})`);
+  for (const url of workerUrls) {
+    console.log(`  Worker ${url}`);
+  }
   console.log("");
 }
 

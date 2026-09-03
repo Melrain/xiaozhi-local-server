@@ -1,5 +1,6 @@
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { BIND_HOST, DEFAULT_FIRMWARE_VERSION, getServerConfig, getWebsocketUrl } from "./config";
+import { recordOtaSighting } from "./device-registry";
 
 const OTA_PATHS = new Set([
   "/xiaozhi/ota",
@@ -117,6 +118,15 @@ async function handleOta(req: IncomingMessage, res: ServerResponse): Promise<voi
   const payload = buildOtaPayload(version);
   const deviceId = header(req, "device-id");
   const clientId = header(req, "client-id");
+
+  if (deviceId || clientId) {
+    recordOtaSighting({
+      deviceId: deviceId || "-",
+      clientId: clientId || "-",
+      firmwareVersion: version,
+      lastSeenAt: Date.now(),
+    });
+  }
 
   console.log(
     `[OTA] ${method} ${path} Device-Id=${deviceId || "-"} Client-Id=${clientId || "-"} websocket=${payload.websocket.url}`,
