@@ -66,7 +66,7 @@ export function setUplinkSampleRateHint(sessionId: string, sampleRate: number): 
   }
 }
 
-function ratesToTry(sessionId: string): number[] {
+function ratesToTry(sessionId: string): Array<(typeof SAMPLE_RATES)[number]> {
   const hint = hintMap().get(sessionId);
   if (hint === 24000) return [24000, 16000];
   return [16000, 24000];
@@ -182,6 +182,8 @@ export function getUplinkSampleRate(sessionId: string): number {
 export function measureUplinkFrame(sessionId: string, frame: Buffer): {
   level: number;
   framesPerSec: number;
+  pcm: Buffer | null;
+  sampleRate: number;
 } {
   const now = Date.now();
   const times = windowMap().get(sessionId) ?? [];
@@ -198,10 +200,14 @@ export function measureUplinkFrame(sessionId: string, frame: Buffer): {
     return {
       level: pcmRms(cleaned),
       framesPerSec: recent.length,
+      pcm: cleaned,
+      sampleRate,
     };
   }
   return {
     level: 0,
     framesPerSec: recent.length,
+    pcm: null,
+    sampleRate: decoderMap().get(sessionId)?.sampleRate ?? 16000,
   };
 }

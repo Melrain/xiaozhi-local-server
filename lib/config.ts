@@ -4,12 +4,26 @@ export const DEFAULT_WS_PORT = 8000;
 export const DEFAULT_UI_PORT = 3000;
 export const DEFAULT_FIRMWARE_VERSION = "2.4.2";
 export const BIND_HOST = "0.0.0.0";
+export const DEFAULT_REALTIME_MODEL = "qwen3.5-omni-flash-realtime";
+export const DEFAULT_REALTIME_VOICE = "Tina";
+export const DEFAULT_REALTIME_INSTRUCTIONS =
+  "你是桌面机器人「小智」，性格友善、简洁、口语化。用简短中文陪伴用户，回答清楚即可，不要长篇大论。";
 
 export type ServerConfig = {
   advertiseHost: string;
   otaPort: number;
   wsPort: number;
   uiPort: number;
+};
+
+export type RealtimeConfig = {
+  apiKey: string;
+  workspaceId: string;
+  model: string;
+  voice: string;
+  url: string;
+  instructions: string;
+  configured: boolean;
 };
 
 function readInt(name: string, fallback: number): number {
@@ -42,4 +56,32 @@ export function getListenStreamUrl(config: ServerConfig = getServerConfig()): st
 
 export function getUiUrl(config: ServerConfig = getServerConfig()): string {
   return `http://${config.advertiseHost}:${config.uiPort}/`;
+}
+
+function withModelQuery(url: string, model: string): string {
+  if (!url || url.includes("model=")) return url;
+  return `${url}${url.includes("?") ? "&" : "?"}model=${encodeURIComponent(model)}`;
+}
+
+export function getRealtimeConfig(): RealtimeConfig {
+  const apiKey = process.env.DASHSCOPE_API_KEY?.trim() ?? "";
+  const workspaceId = process.env.DASHSCOPE_WORKSPACE_ID?.trim() ?? "";
+  const model = process.env.DASHSCOPE_REALTIME_MODEL?.trim() || DEFAULT_REALTIME_MODEL;
+  const voice = process.env.DASHSCOPE_REALTIME_VOICE?.trim() || DEFAULT_REALTIME_VOICE;
+  const instructions =
+    process.env.DASHSCOPE_INSTRUCTIONS?.trim() || DEFAULT_REALTIME_INSTRUCTIONS;
+  const overrideUrl = process.env.DASHSCOPE_REALTIME_URL?.trim() ?? "";
+  const builtUrl = workspaceId
+    ? `wss://${workspaceId}.cn-beijing.maas.aliyuncs.com/api-ws/v1/realtime?model=${encodeURIComponent(model)}`
+    : "";
+  const url = overrideUrl ? withModelQuery(overrideUrl, model) : builtUrl;
+  return {
+    apiKey,
+    workspaceId,
+    model,
+    voice,
+    url,
+    instructions,
+    configured: Boolean(apiKey && url),
+  };
 }

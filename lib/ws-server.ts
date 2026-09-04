@@ -17,7 +17,13 @@ import {
 import { denoiseBackend, isDenoiseEnabled, setDenoiseEnabled } from "./denoise";
 import { addMonitor, removeMonitor, sendStreamHello } from "./listen-stream";
 import { setListenPaused } from "./listen-control";
-import { playAudioFileToDevice } from "./play-audio";
+import { interruptPlayback, playAudioFileToDevice } from "./play-audio";
+import {
+  attachRealtimeBridge,
+  detachRealtimeBridge,
+  getRealtimeBridge,
+  logRealtimeStartup,
+} from "./realtime-bridge";
 import {
   disposeUplinkMeter,
   getUplinkSampleRate,
@@ -268,6 +274,10 @@ function handleText(ws: WebSocket, session: Session, raw: string): void {
       session.stubSentForBurst = false;
       clearIdle(session);
       resetUplinkMeter(session.id);
+      if (isPlaying(session.id)) {
+        getRealtimeBridge(session.id)?.interrupt("listen_start");
+        interruptPlayback(session.id);
+      }
       patchConnection(session.id, {
         ...emptyListenFields(),
         listenState: "start",
@@ -284,9 +294,12 @@ function handleText(ws: WebSocket, session: Session, raw: string): void {
   }
 
   if (type === "abort") {
-    console.log(`[WS] json type=abort reason=${message.reason ?? "-"}`);
+    const reason = message.reason || "abort";
+    console.log(`[WS] json type=abort reason=${reason}`);
     clearIdle(session);
     session.stubSentForBurst = true;
+    getRealtimeBridge(session.id)?.interrupt(reason);
+    interruptPlayback(session.id);
     patchConnection(session.id, { listenState: "abort" });
     return;
   }
@@ -301,6 +314,7 @@ function handleText(ws: WebSocket, session: Session, raw: string): void {
 
 export function startWebsocketServer(): void {
   const { wsPort } = getServerConfig();
+  logRealtimeStartup();
   const httpServer = createServer((req, res) => {
     const reqPath = requestPath(req);
     const method = req.method ?? "GET";
@@ -464,6 +478,7 @@ export function startWebsocketServer(): void {
 
     // Send hello immediately — waiting for the device hello races and closes 1006.
     sendHello(ws, session.id);
+    const realtime = attachRealtimeBridge(session.id);
 
     const pendingPlay = takePendingPlay();
     if (pendingPlay) {
@@ -497,7 +512,9 @@ export function startWebsocketServer(): void {
         if (session.opusFrames === 1 || session.opusFrames % 25 === 0) {
           console.log(`[WS] opus frames=${session.opusFrames} last_bytes=${bytes}`);
         }
-        if (!isPlaying(session.id) && !isListenPaused(session.id)) {
+        if (realtime && meter.pcm) {
+          realtime.appendUplinkPcm(meter.pcm, meter.sampleRate);
+        } else if (!realtime && !isPlaying(session.id) && !isListenPaused(session.id)) {
           armIdleStub(ws, session);
         }
         return;
@@ -509,6 +526,7 @@ export function startWebsocketServer(): void {
 
     ws.on("close", (code, reason) => {
       clearIdle(session);
+      detachRealtimeBridge(session.id);
       deleteSessionSocket(session.id);
       disposeUplinkMeter(session.id);
       removeConnection(session.id);

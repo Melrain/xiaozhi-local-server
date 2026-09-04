@@ -8,12 +8,13 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
-import { getOtaUrl, getServerConfig, getUiUrl, getWebsocketUrl } from "@/lib/config";
+import { getOtaUrl, getRealtimeConfig, getServerConfig, getUiUrl, getWebsocketUrl } from "@/lib/config";
 
 export const dynamic = "force-dynamic";
 
 export default function Home() {
   const config = getServerConfig();
+  const realtime = getRealtimeConfig();
   const otaUrl = getOtaUrl(config);
   const wsUrl = getWebsocketUrl(config);
   const uiUrl = getUiUrl(config);
@@ -79,8 +80,11 @@ export default function Home() {
             <p className="mt-1 font-mono text-[13px]">{config.advertiseHost}</p>
           </div>
           <div className="rounded-lg bg-muted px-3 py-3">
-            <p className="text-xs text-muted-foreground">ASR / TTS</p>
-            <p className="mt-1">尚未接入，只记日志并回占位 JSON</p>
+            <p className="text-xs text-muted-foreground">Qwen-Omni Realtime</p>
+            <p className="mt-1">{realtime.configured ? realtime.model : "未配置，走本地占位"}</p>
+            <p className="mt-1 text-xs text-muted-foreground">
+              {realtime.configured ? `音色 ${realtime.voice}` : "填 DASHSCOPE_API_KEY 与 WORKSPACE_ID"}
+            </p>
           </div>
         </CardContent>
       </Card>

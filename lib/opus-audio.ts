@@ -1,6 +1,7 @@
 import { spawn } from "node:child_process";
 import { readFile } from "node:fs/promises";
 import ffmpegStatic from "ffmpeg-static";
+import OpusScript from "opusscript";
 
 const OPUS_HEAD = Buffer.from("OpusHead");
 const OPUS_TAGS = Buffer.from("OpusTags");
@@ -90,4 +91,83 @@ export async function audioFileToOpusFrames(inputPath: string, outputOggPath: st
     throw new Error(`no opus frames in ${outputOggPath}`);
   }
   return frames;
+}
+
+export const DOWNLINK_SAMPLE_RATE = 24000;
+export const UPLINK_BAILIAN_RATE = 16000;
+export const OPUS_FRAME_MS = 60;
+const DOWNLINK_SAMPLES_PER_FRAME = (DOWNLINK_SAMPLE_RATE * OPUS_FRAME_MS) / 1000;
+const DOWNLINK_BYTES_PER_FRAME = DOWNLINK_SAMPLES_PER_FRAME * 2;
+
+export function resamplePcmS16le(pcm: Buffer, fromRate: number, toRate: number): Buffer {
+  if (fromRate === toRate || pcm.length < 2) return pcm;
+  const inSamples = Math.floor(pcm.length / 2);
+  const outSamples = Math.max(1, Math.round((inSamples * toRate) / fromRate));
+  const out = Buffer.alloc(outSamples * 2);
+  const last = Math.max(0, inSamples - 1);
+  for (let i = 0; i < outSamples; i += 1) {
+    const src = (i * fromRate) / toRate;
+    const i0 = Math.min(last, Math.floor(src));
+    const i1 = Math.min(last, i0 + 1);
+    const frac = src - i0;
+    const s0 = pcm.readInt16LE(i0 * 2);
+    const s1 = pcm.readInt16LE(i1 * 2);
+    out.writeInt16LE(
+      Math.max(-32768, Math.min(32767, Math.round(s0 + (s1 - s0) * frac))),
+      i * 2,
+    );
+  }
+  return out;
+}
+
+export class PcmOpusEncoder {
+  private readonly encoder: InstanceType<typeof OpusScript>;
+  private leftover: Buffer = Buffer.alloc(0);
+
+  constructor(sampleRate: 8000 | 12000 | 16000 | 24000 | 48000 = DOWNLINK_SAMPLE_RATE) {
+    this.encoder = new OpusScript(sampleRate, 1, OpusScript.Application.VOIP);
+    try {
+      this.encoder.setBitrate(24000);
+    } catch {
+      // some builds reject setBitrate; VOIP defaults are fine
+    }
+  }
+
+  push(pcm: Buffer): Buffer[] {
+    const frames: Buffer[] = [];
+    let data = this.leftover.length > 0 ? Buffer.concat([this.leftover, pcm]) : pcm;
+    while (data.length >= DOWNLINK_BYTES_PER_FRAME) {
+      const slice = data.subarray(0, DOWNLINK_BYTES_PER_FRAME);
+      data = data.subarray(DOWNLINK_BYTES_PER_FRAME);
+      frames.push(this.encodeFrame(slice));
+    }
+    this.leftover = data;
+    return frames;
+  }
+
+  flush(): Buffer[] {
+    if (this.leftover.length === 0) return [];
+    const padded = Buffer.alloc(DOWNLINK_BYTES_PER_FRAME);
+    this.leftover.copy(padded);
+    this.leftover = Buffer.alloc(0);
+    return [this.encodeFrame(padded)];
+  }
+
+  reset(): void {
+    this.leftover = Buffer.alloc(0);
+  }
+
+  dispose(): void {
+    this.reset();
+    try {
+      this.encoder.delete();
+    } catch {
+      // ignore
+    }
+  }
+
+  private encodeFrame(pcm: Buffer): Buffer {
+    const encoded = this.encoder.encode(pcm, DOWNLINK_SAMPLES_PER_FRAME);
+    return Buffer.isBuffer(encoded) ? encoded : Buffer.from(encoded);
+  }
 }
