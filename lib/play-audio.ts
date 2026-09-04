@@ -21,7 +21,7 @@ function playGenerations(): Map<string, number> {
   return globalWithStore[PLAY_GEN_KEY];
 }
 
-function bumpPlayGeneration(sessionId: string): number {
+export function bumpPlayGeneration(sessionId: string): number {
   const next = (playGenerations().get(sessionId) ?? 0) + 1;
   playGenerations().set(sessionId, next);
   return next;
@@ -53,6 +53,9 @@ export async function playOpusToSession(
   if (!ws || ws.readyState !== WebSocket.OPEN) {
     throw new Error("device socket is not open");
   }
+
+  const { getRealtimeBridge } = await import("./realtime-bridge");
+  getRealtimeBridge(sessionId)?.interrupt("play_test");
 
   const generation = bumpPlayGeneration(sessionId);
   patchConnection(sessionId, { playing: true });

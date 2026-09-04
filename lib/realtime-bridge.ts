@@ -9,7 +9,7 @@ import {
   resamplePcmS16le,
   UPLINK_BAILIAN_RATE,
 } from "./opus-audio";
-import { interruptPlayback } from "./play-audio";
+import { bumpPlayGeneration, interruptPlayback } from "./play-audio";
 import {
   getRealtimeStatus,
   patchRealtimeStatus,
@@ -102,6 +102,7 @@ class SessionBridge implements RealtimeBridge {
   private sentenceSent = false;
   private announcedSentence = "";
   private inputTranscript = "";
+  private discardOutput = false;
 
   constructor(sessionId: string) {
     this.sessionId = sessionId;
@@ -129,22 +130,8 @@ class SessionBridge implements RealtimeBridge {
 
   interrupt(reason: string): void {
     const shouldCancel = this.ttsActive || this.responding || this.outbound.length > 0;
-    this.clearDownlink();
     interruptPlayback(this.sessionId);
-    if (this.ttsActive) {
-      sendDeviceJson(this.sessionId, { session_id: this.sessionId, type: "tts", state: "stop" });
-    }
-    this.ttsActive = false;
-    this.responding = false;
-    this.audioFinished = false;
-    this.sentenceText = "";
-    this.sentenceSent = false;
-    this.announcedSentence = "";
-    patchConnection(this.sessionId, {
-      playing: false,
-      lastInterruptReason: reason,
-    });
-    patchRealtimeStatus({ lastInterruptReason: reason });
+    this.stopDeviceTts(reason);
     if (shouldCancel && this.isConnected()) {
       this.sendEvent({ type: "response.cancel" });
     }
@@ -157,12 +144,7 @@ class SessionBridge implements RealtimeBridge {
     if (this.disposed) return;
     this.disposed = true;
     this.clearTimers();
-    this.clearDownlink();
-    if (this.ttsActive) {
-      sendDeviceJson(this.sessionId, { session_id: this.sessionId, type: "tts", state: "stop" });
-      this.ttsActive = false;
-      patchConnection(this.sessionId, { playing: false });
-    }
+    this.stopDeviceTts();
     const socket = this.ws;
     this.ws = null;
     if (socket && (socket.readyState === WebSocket.OPEN || socket.readyState === WebSocket.CONNECTING)) {
@@ -274,6 +256,7 @@ class SessionBridge implements RealtimeBridge {
         refreshConnectedFlag();
         break;
       case "response.created":
+        this.discardOutput = false;
         this.responding = true;
         this.audioFinished = false;
         this.sentenceText = "";
@@ -284,22 +267,36 @@ class SessionBridge implements RealtimeBridge {
         this.onAudioDelta(event.delta ?? "");
         break;
       case "response.audio.done":
+        if (this.discardOutput) break;
         this.audioFinished = true;
         this.enqueueFrames(this.encoder.flush());
         this.finishTurnIfIdle();
         break;
       case "response.done":
-      case "response.cancelled":
+        if (this.discardOutput) {
+          this.responding = false;
+          break;
+        }
         this.responding = false;
         this.audioFinished = true;
         this.enqueueFrames(this.encoder.flush());
         this.finishTurnIfIdle();
         break;
+      case "response.cancelled":
+        this.responding = false;
+        this.discardOutput = true;
+        this.encoder.reset();
+        if (this.ttsActive || this.outbound.length > 0) {
+          this.stopDeviceTts();
+        }
+        break;
       case "response.audio_transcript.delta":
+        if (this.discardOutput) break;
         this.sentenceText += event.delta ?? "";
         this.maybeSendSentenceStart();
         break;
       case "response.audio_transcript.done":
+        if (this.discardOutput) break;
         this.sentenceText = event.transcript || this.sentenceText;
         if (this.ttsActive && this.sentenceText.trim() && this.sentenceText.trim() !== this.announcedSentence) {
           sendDeviceJson(this.sessionId, {
@@ -321,10 +318,10 @@ class SessionBridge implements RealtimeBridge {
         }
         break;
       case "response.text.delta":
-        this.sentenceText += event.delta ?? "";
+        if (!this.discardOutput) this.sentenceText += event.delta ?? "";
         break;
       case "response.text.done":
-        if (event.transcript || event.text) {
+        if (!this.discardOutput && (event.transcript || event.text)) {
           this.sentenceText = event.transcript || event.text || this.sentenceText;
         }
         break;
@@ -352,7 +349,7 @@ class SessionBridge implements RealtimeBridge {
   }
 
   private onAudioDelta(b64: string): void {
-    if (!b64) return;
+    if (this.discardOutput || !b64) return;
     let pcm: Buffer;
     try {
       pcm = Buffer.from(b64, "base64");
@@ -371,6 +368,7 @@ class SessionBridge implements RealtimeBridge {
     }
     this.ttsActive = true;
     this.audioFinished = false;
+    bumpPlayGeneration(this.sessionId);
     patchConnection(this.sessionId, { playing: true });
     sendDeviceJson(this.sessionId, { session_id: this.sessionId, type: "tts", state: "start" });
     sendDeviceJson(this.sessionId, {
@@ -399,7 +397,7 @@ class SessionBridge implements RealtimeBridge {
   }
 
   private enqueueFrames(frames: Buffer[]): void {
-    if (frames.length === 0) return;
+    if (this.discardOutput || frames.length === 0) return;
     this.outbound.push(...frames);
     this.ensurePace();
   }
@@ -486,9 +484,34 @@ class SessionBridge implements RealtimeBridge {
     }
   }
 
+  private stopDeviceTts(reason?: string): void {
+    this.clearDownlink();
+    if (this.ttsActive) {
+      sendDeviceJson(this.sessionId, { session_id: this.sessionId, type: "tts", state: "stop" });
+    }
+    this.ttsActive = false;
+    this.responding = false;
+    this.audioFinished = false;
+    this.sentenceText = "";
+    this.sentenceSent = false;
+    this.announcedSentence = "";
+    this.discardOutput = true;
+    patchConnection(this.sessionId, {
+      playing: false,
+      ...(reason ? { lastInterruptReason: reason } : {}),
+    });
+    if (reason) patchRealtimeStatus({ lastInterruptReason: reason });
+  }
+
   private handleDrop(): void {
     this.stopPing();
     this.ws = null;
+    if (this.ttsActive || this.outbound.length > 0) {
+      this.stopDeviceTts("bailian_drop");
+    } else {
+      this.responding = false;
+      this.discardOutput = true;
+    }
     patchConnection(this.sessionId, { realtimeConnected: false });
     refreshConnectedFlag();
     if (this.disposed) return;
