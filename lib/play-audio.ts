@@ -1,5 +1,9 @@
 import { WebSocket } from "ws";
 import { isPlaying, patchConnection } from "./device-registry";
+import {
+  claimDownlink,
+  isDownlinkOwner,
+} from "./downlink-owner";
 import { audioFileToOpusFrames } from "./opus-audio";
 import {
   getOpenSession,
@@ -9,22 +13,9 @@ import {
 
 const FRAME_MS = 60;
 const TEST_SENTENCE = "你好，我是小智本地服务。如果你能听到这段话，说明喇叭已经通了。";
-const PLAY_GEN_KEY = Symbol.for("xiaozhi.play-generation");
-
-function playGenerations(): Map<string, number> {
-  const globalWithStore = globalThis as typeof globalThis & {
-    [PLAY_GEN_KEY]?: Map<string, number>;
-  };
-  if (!globalWithStore[PLAY_GEN_KEY]) {
-    globalWithStore[PLAY_GEN_KEY] = new Map();
-  }
-  return globalWithStore[PLAY_GEN_KEY];
-}
 
 export function bumpPlayGeneration(sessionId: string): number {
-  const next = (playGenerations().get(sessionId) ?? 0) + 1;
-  playGenerations().set(sessionId, next);
-  return next;
+  return claimDownlink(sessionId, "none");
 }
 
 export type PlayResult = {
@@ -54,17 +45,17 @@ export async function playOpusToSession(
     throw new Error("device socket is not open");
   }
 
-  const { getRealtimeBridge } = await import("./realtime-bridge");
-  getRealtimeBridge(sessionId)?.interrupt("play_test");
+  const { interruptRealtime } = await import("./realtime-bridge");
+  interruptRealtime(sessionId, "play_test");
 
-  const generation = bumpPlayGeneration(sessionId);
+  const generation = claimDownlink(sessionId, "play");
   patchConnection(sessionId, { playing: true });
   sendJson(ws, { session_id: sessionId, type: "tts", state: "start" });
   sendJson(ws, { session_id: sessionId, type: "tts", state: "sentence_start", text });
 
   try {
     for (const frame of frames) {
-      if (playGenerations().get(sessionId) !== generation) {
+      if (!isDownlinkOwner(sessionId, generation, "play")) {
         console.log(`[PLAY] interrupted session_id=${sessionId}`);
         return;
       }
@@ -74,11 +65,12 @@ export async function playOpusToSession(
       ws.send(frame);
       await sleep(FRAME_MS);
     }
-    if (playGenerations().get(sessionId) !== generation) return;
+    if (!isDownlinkOwner(sessionId, generation, "play")) return;
     sendJson(ws, { session_id: sessionId, type: "tts", state: "stop" });
     console.log(`[PLAY] sent ${frames.length} opus frames session_id=${sessionId}`);
   } finally {
-    if (playGenerations().get(sessionId) === generation) {
+    if (isDownlinkOwner(sessionId, generation, "play")) {
+      claimDownlink(sessionId, "none");
       patchConnection(sessionId, { playing: false });
     }
   }

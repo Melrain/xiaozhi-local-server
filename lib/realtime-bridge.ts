@@ -3,13 +3,19 @@ import { WebSocket } from "ws";
 import { getRealtimeConfig } from "./config";
 import { isListenPaused, isPlaying, patchConnection } from "./device-registry";
 import {
+  claimDownlink,
+  getDownlink,
+  isDownlinkOwner,
+  releaseDownlink,
+} from "./downlink-owner";
+import {
   DOWNLINK_SAMPLE_RATE,
   OPUS_FRAME_MS,
   PcmOpusEncoder,
   resamplePcmS16le,
   UPLINK_BAILIAN_RATE,
 } from "./opus-audio";
-import { bumpPlayGeneration, interruptPlayback } from "./play-audio";
+import { interruptPlayback } from "./play-audio";
 import {
   getRealtimeStatus,
   patchRealtimeStatus,
@@ -29,10 +35,15 @@ type BailianEvent = {
   transcript?: string;
   text?: string;
   stash?: string;
+  response_id?: string;
   error?: { message?: string; code?: string } | string;
   response?: { id?: string };
   item?: { id?: string };
 };
+
+function eventResponseId(event: BailianEvent): string | undefined {
+  return event.response_id || event.response?.id;
+}
 
 export type RealtimeBridge = {
   appendUplinkPcm(pcm: Buffer, sampleRate: number): void;
@@ -102,7 +113,11 @@ class SessionBridge implements RealtimeBridge {
   private sentenceSent = false;
   private announcedSentence = "";
   private inputTranscript = "";
-  private discardOutput = false;
+  private outputGeneration = 0;
+  private acceptedGeneration = 0;
+  private activeResponseId: string | null = null;
+  private cancelledResponseIds = new Set<string>();
+  private downlinkGeneration = 0;
 
   constructor(sessionId: string) {
     this.sessionId = sessionId;
@@ -256,7 +271,8 @@ class SessionBridge implements RealtimeBridge {
         refreshConnectedFlag();
         break;
       case "response.created":
-        this.discardOutput = false;
+        this.activeResponseId = eventResponseId(event) ?? `anon_${this.outputGeneration}`;
+        this.acceptedGeneration = this.outputGeneration;
         this.responding = true;
         this.audioFinished = false;
         this.sentenceText = "";
@@ -264,39 +280,39 @@ class SessionBridge implements RealtimeBridge {
         this.announcedSentence = "";
         break;
       case "response.audio.delta":
-        this.onAudioDelta(event.delta ?? "");
+        this.onAudioDelta(event);
         break;
       case "response.audio.done":
-        if (this.discardOutput) break;
+        if (!this.acceptOutput(event)) break;
         this.audioFinished = true;
         this.enqueueFrames(this.encoder.flush());
         this.finishTurnIfIdle();
         break;
       case "response.done":
-        if (this.discardOutput) {
-          this.responding = false;
-          break;
-        }
         this.responding = false;
+        if (!this.acceptOutput(event)) break;
         this.audioFinished = true;
         this.enqueueFrames(this.encoder.flush());
         this.finishTurnIfIdle();
         break;
-      case "response.cancelled":
+      case "response.cancelled": {
+        const cancelledId = eventResponseId(event) || this.activeResponseId;
+        if (cancelledId) this.cancelledResponseIds.add(cancelledId);
+        this.invalidateOutput();
         this.responding = false;
-        this.discardOutput = true;
         this.encoder.reset();
         if (this.ttsActive || this.outbound.length > 0) {
           this.stopDeviceTts();
         }
         break;
+      }
       case "response.audio_transcript.delta":
-        if (this.discardOutput) break;
+        if (!this.acceptOutput(event)) break;
         this.sentenceText += event.delta ?? "";
         this.maybeSendSentenceStart();
         break;
       case "response.audio_transcript.done":
-        if (this.discardOutput) break;
+        if (!this.acceptOutput(event)) break;
         this.sentenceText = event.transcript || this.sentenceText;
         if (this.ttsActive && this.sentenceText.trim() && this.sentenceText.trim() !== this.announcedSentence) {
           sendDeviceJson(this.sessionId, {
@@ -318,10 +334,10 @@ class SessionBridge implements RealtimeBridge {
         }
         break;
       case "response.text.delta":
-        if (!this.discardOutput) this.sentenceText += event.delta ?? "";
+        if (this.acceptOutput(event)) this.sentenceText += event.delta ?? "";
         break;
       case "response.text.done":
-        if (!this.discardOutput && (event.transcript || event.text)) {
+        if (this.acceptOutput(event) && (event.transcript || event.text)) {
           this.sentenceText = event.transcript || event.text || this.sentenceText;
         }
         break;
@@ -348,8 +364,10 @@ class SessionBridge implements RealtimeBridge {
     }
   }
 
-  private onAudioDelta(b64: string): void {
-    if (this.discardOutput || !b64) return;
+  private onAudioDelta(event: BailianEvent): void {
+    if (!this.acceptOutput(event)) return;
+    const b64 = event.delta ?? "";
+    if (!b64) return;
     let pcm: Buffer;
     try {
       pcm = Buffer.from(b64, "base64");
@@ -362,13 +380,14 @@ class SessionBridge implements RealtimeBridge {
   }
 
   private beginTurn(): void {
+    if (!this.acceptOutput()) return;
     if (this.ttsActive) {
       this.maybeSendSentenceStart();
       return;
     }
     this.ttsActive = true;
     this.audioFinished = false;
-    bumpPlayGeneration(this.sessionId);
+    this.downlinkGeneration = claimDownlink(this.sessionId, "realtime");
     patchConnection(this.sessionId, { playing: true });
     sendDeviceJson(this.sessionId, { session_id: this.sessionId, type: "tts", state: "start" });
     sendDeviceJson(this.sessionId, {
@@ -397,7 +416,7 @@ class SessionBridge implements RealtimeBridge {
   }
 
   private enqueueFrames(frames: Buffer[]): void {
-    if (this.discardOutput || frames.length === 0) return;
+    if (!this.acceptOutput() || frames.length === 0) return;
     this.outbound.push(...frames);
     this.ensurePace();
   }
@@ -421,6 +440,11 @@ class SessionBridge implements RealtimeBridge {
     if (!this.audioFinished || this.outbound.length > 0) return;
     this.stopPace();
     if (!this.ttsActive) return;
+    if (!isDownlinkOwner(this.sessionId, this.downlinkGeneration, "realtime")) {
+      this.ttsActive = false;
+      this.responding = false;
+      return;
+    }
     if (!this.sentenceSent) {
       sendDeviceJson(this.sessionId, {
         session_id: this.sessionId,
@@ -433,7 +457,9 @@ class SessionBridge implements RealtimeBridge {
     sendDeviceJson(this.sessionId, { session_id: this.sessionId, type: "tts", state: "stop" });
     this.ttsActive = false;
     this.responding = false;
-    patchConnection(this.sessionId, { playing: false });
+    if (releaseDownlink(this.sessionId, this.downlinkGeneration, "realtime")) {
+      patchConnection(this.sessionId, { playing: false });
+    }
     console.log(`[REALTIME] tts stop session=${this.sessionId.slice(0, 8)}`);
   }
 
@@ -484,7 +510,33 @@ class SessionBridge implements RealtimeBridge {
     }
   }
 
+  private eventResponseId(event?: BailianEvent): string | undefined {
+    return event ? eventResponseId(event) : undefined;
+  }
+
+  private invalidateOutput(): void {
+    this.outputGeneration += 1;
+    if (this.activeResponseId) {
+      this.cancelledResponseIds.add(this.activeResponseId);
+      while (this.cancelledResponseIds.size > 32) {
+        const first = this.cancelledResponseIds.values().next().value;
+        if (!first) break;
+        this.cancelledResponseIds.delete(first);
+      }
+    }
+    this.activeResponseId = null;
+  }
+
+  private acceptOutput(event?: BailianEvent): boolean {
+    const id = this.eventResponseId(event);
+    if (id && this.cancelledResponseIds.has(id)) return false;
+    if (this.acceptedGeneration !== this.outputGeneration) return false;
+    if (id && this.activeResponseId && id !== this.activeResponseId) return false;
+    return true;
+  }
+
   private stopDeviceTts(reason?: string): void {
+    this.invalidateOutput();
     this.clearDownlink();
     if (this.ttsActive) {
       sendDeviceJson(this.sessionId, { session_id: this.sessionId, type: "tts", state: "stop" });
@@ -495,9 +547,9 @@ class SessionBridge implements RealtimeBridge {
     this.sentenceText = "";
     this.sentenceSent = false;
     this.announcedSentence = "";
-    this.discardOutput = true;
+    const ownedByPlay = getDownlink(this.sessionId).owner === "play";
     patchConnection(this.sessionId, {
-      playing: false,
+      ...(ownedByPlay ? {} : { playing: false }),
       ...(reason ? { lastInterruptReason: reason } : {}),
     });
     if (reason) patchRealtimeStatus({ lastInterruptReason: reason });
@@ -506,12 +558,8 @@ class SessionBridge implements RealtimeBridge {
   private handleDrop(): void {
     this.stopPing();
     this.ws = null;
-    if (this.ttsActive || this.outbound.length > 0) {
-      this.stopDeviceTts("bailian_drop");
-    } else {
-      this.responding = false;
-      this.discardOutput = true;
-    }
+    const reason = this.ttsActive || this.outbound.length > 0 ? "bailian_drop" : undefined;
+    this.stopDeviceTts(reason);
     patchConnection(this.sessionId, { realtimeConnected: false });
     refreshConnectedFlag();
     if (this.disposed) return;
@@ -546,6 +594,13 @@ export function attachRealtimeBridge(sessionId: string): RealtimeBridge | null {
 
 export function getRealtimeBridge(sessionId: string): RealtimeBridge | undefined {
   return bridges().get(sessionId);
+}
+
+export function interruptRealtime(sessionId: string, reason = "interrupt"): boolean {
+  const bridge = bridges().get(sessionId);
+  if (!bridge) return false;
+  bridge.interrupt(reason);
+  return true;
 }
 
 export function detachRealtimeBridge(sessionId: string): void {
