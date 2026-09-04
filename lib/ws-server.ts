@@ -1,7 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { createServer, type IncomingMessage } from "node:http";
 import { WebSocket, WebSocketServer } from "ws";
-import path from "node:path";
 import { BIND_HOST, getServerConfig } from "./config";
 import {
   emptyListenFields,
@@ -16,8 +15,18 @@ import {
 } from "./device-registry";
 import { denoiseBackend, isDenoiseEnabled, setDenoiseEnabled } from "./denoise";
 import { addMonitor, removeMonitor, sendStreamHello } from "./listen-stream";
+import {
+  disposeDeviceMcp,
+  handleDeviceMcpResponse,
+  setDeviceVolume,
+  shouldStartDeviceMcp,
+  startDeviceMcp,
+} from "./device-mcp";
+import { disconnectDevice } from "./disconnect-device";
+import { clearIdleDisconnect, noteDeviceActivity, noteVoiceFrame } from "./idle-disconnect";
 import { setListenPaused } from "./listen-control";
-import { interruptPlayback, playAudioFileToDevice } from "./play-audio";
+import { interruptPlayback, playAudioFileToDevice, TEST_OGG_PATH, TEST_WAV_PATH } from "./play-audio";
+import { attachBrowserRealtime } from "./realtime-browser";
 import {
   attachRealtimeBridge,
   detachRealtimeBridge,
@@ -41,6 +50,7 @@ import {
 
 const WS_PATHS = new Set(["/xiaozhi/v1", "/xiaozhi/v1/"]);
 const LISTEN_STREAM_PATHS = new Set(["/listen-stream", "/listen-stream/"]);
+const REALTIME_TEST_PATHS = new Set(["/realtime-test", "/realtime-test/"]);
 const OPUS_IDLE_MS = 1800;
 const STUB_STT_TEXT = "（本地占位）已收到语音";
 const STUB_TTS_TEXT = "本地服务已收到你的语音，语音识别和合成还没有接入。";
@@ -53,6 +63,7 @@ type JsonRpc = {
     protocolVersion?: string;
   };
   result?: unknown;
+  error?: { code?: number; message?: string };
 };
 
 type XiaoZhiMessage = {
@@ -65,6 +76,7 @@ type XiaoZhiMessage = {
   method?: string;
   id?: string | number | null;
   params?: JsonRpc["params"];
+  features?: { mcp?: boolean };
   audio_params?: {
     format?: string;
     sample_rate?: number;
@@ -187,8 +199,9 @@ function handleMcp(ws: WebSocket, sessionId: string, message: XiaoZhiMessage): v
   const method = rpc.method ?? "";
   const id = rpc.id;
 
-  if (!method && id === undefined) {
-    console.log("[WS] json type=mcp (empty)");
+  if (!method) {
+    if (handleDeviceMcpResponse(sessionId, rpc)) return;
+    console.log(`[WS] json type=mcp (response id=${id ?? "-"})`);
     return;
   }
 
@@ -260,8 +273,13 @@ function handleText(ws: WebSocket, session: Session, raw: string): void {
   if (type === "hello") {
     const sampleRate = message.audio_params?.sample_rate;
     if (sampleRate) setUplinkSampleRateHint(session.id, sampleRate);
-    console.log(`[WS] json type=hello sample_rate=${sampleRate || "-"}`);
+    console.log(`[WS] json type=hello sample_rate=${sampleRate || "-"} mcp=${message.features?.mcp ?? "-"}`);
     sendHello(ws, session.id);
+    if (shouldStartDeviceMcp(message.features)) {
+      startDeviceMcp(session.id);
+    } else {
+      patchConnection(session.id, { mcpReady: false, mcpError: "设备未声明 MCP" });
+    }
     return;
   }
 
@@ -269,6 +287,9 @@ function handleText(ws: WebSocket, session: Session, raw: string): void {
     const listenState = message.state ?? "-";
     const listenMode = message.mode ?? getConnection(session.id)?.listenMode ?? "-";
     console.log(`[WS] json type=listen state=${listenState} mode=${listenMode}`);
+    if (message.state === "start" || message.state === "detect") {
+      noteDeviceActivity(session.id);
+    }
     if (message.state === "start") {
       session.opusFrames = 0;
       session.stubSentForBurst = false;
@@ -289,6 +310,9 @@ function handleText(ws: WebSocket, session: Session, raw: string): void {
         listenState,
         listenMode: message.mode || getConnection(session.id)?.listenMode || "",
       });
+      if (message.state === "stop") {
+        getRealtimeBridge(session.id)?.requestTurn("listen_stop");
+      }
     }
     return;
   }
@@ -296,6 +320,7 @@ function handleText(ws: WebSocket, session: Session, raw: string): void {
   if (type === "abort") {
     const reason = message.reason || "abort";
     console.log(`[WS] json type=abort reason=${reason}`);
+    noteDeviceActivity(session.id);
     clearIdle(session);
     session.stubSentForBurst = true;
     getRealtimeBridge(session.id)?.interrupt(reason);
@@ -352,6 +377,47 @@ export function startWebsocketServer(): void {
       return;
     }
 
+    if (reqPath === "/disconnect" && method === "POST") {
+      try {
+        const url = new URL(req.url ?? "/", "http://localhost");
+        const sessionId = url.searchParams.get("session") || undefined;
+        const result = disconnectDevice(sessionId);
+        res.writeHead(result.ok ? 200 : 409, {
+          "Content-Type": "application/json; charset=utf-8",
+        });
+        res.end(JSON.stringify(result));
+      } catch (error: unknown) {
+        const message = error instanceof Error ? error.message : "disconnect failed";
+        res.writeHead(500, { "Content-Type": "application/json; charset=utf-8" });
+        res.end(JSON.stringify({ ok: false, error: message }));
+      }
+      return;
+    }
+
+    if (reqPath === "/volume" && method === "POST") {
+      try {
+        const url = new URL(req.url ?? "/", "http://localhost");
+        const sessionId = url.searchParams.get("session") || undefined;
+        const volume = Number(url.searchParams.get("volume"));
+        void setDeviceVolume(sessionId, volume)
+          .then((result) => {
+            const status = result.ok ? 200 : result.error === "invalid volume" ? 400 : 409;
+            res.writeHead(status, { "Content-Type": "application/json; charset=utf-8" });
+            res.end(JSON.stringify(result));
+          })
+          .catch((error: unknown) => {
+            const message = error instanceof Error ? error.message : "volume failed";
+            res.writeHead(500, { "Content-Type": "application/json; charset=utf-8" });
+            res.end(JSON.stringify({ ok: false, error: message }));
+          });
+      } catch (error: unknown) {
+        const message = error instanceof Error ? error.message : "volume failed";
+        res.writeHead(500, { "Content-Type": "application/json; charset=utf-8" });
+        res.end(JSON.stringify({ ok: false, error: message }));
+      }
+      return;
+    }
+
     if (reqPath === "/denoise" && method === "POST") {
       const url = new URL(req.url ?? "/", "http://localhost");
       const enabled = url.searchParams.get("on") !== "0";
@@ -387,9 +453,9 @@ export function startWebsocketServer(): void {
     }
 
     if (reqPath === "/play" && (method === "POST" || method === "GET")) {
-      const wavPath = path.join(process.cwd(), "tmp", "xiaozhi-test.wav");
-      const oggPath = path.join(process.cwd(), "tmp", "xiaozhi-test.ogg");
-      void playAudioFileToDevice(wavPath, oggPath)
+      const url = new URL(req.url ?? "/", "http://localhost");
+      const sessionId = url.searchParams.get("session") || undefined;
+      void playAudioFileToDevice(TEST_WAV_PATH, TEST_OGG_PATH, sessionId)
         .then((result) => {
           res.writeHead(200, { "Content-Type": "application/json; charset=utf-8" });
           res.end(JSON.stringify(result));
@@ -410,12 +476,19 @@ export function startWebsocketServer(): void {
   // Device and monitor streams share one HTTP server; route upgrades by path.
   const deviceWss = new WebSocketServer({ noServer: true });
   const monitorWss = new WebSocketServer({ noServer: true });
+  const realtimeTestWss = new WebSocketServer({ noServer: true });
 
   httpServer.on("upgrade", (req, socket, head) => {
     const reqPath = requestPath(req);
     if (LISTEN_STREAM_PATHS.has(reqPath)) {
       monitorWss.handleUpgrade(req, socket, head, (ws) => {
         monitorWss.emit("connection", ws, req);
+      });
+      return;
+    }
+    if (REALTIME_TEST_PATHS.has(reqPath)) {
+      realtimeTestWss.handleUpgrade(req, socket, head, (ws) => {
+        realtimeTestWss.emit("connection", ws, req);
       });
       return;
     }
@@ -426,6 +499,11 @@ export function startWebsocketServer(): void {
       return;
     }
     socket.destroy();
+  });
+
+  realtimeTestWss.on("connection", (ws) => {
+    console.log("[REALTIME-TEST] browser connect");
+    attachBrowserRealtime(ws);
   });
 
   monitorWss.on("connection", (ws, req) => {
@@ -475,6 +553,7 @@ export function startWebsocketServer(): void {
       ...emptyListenFields(),
     });
     setSessionSocket(session.id, ws);
+    noteDeviceActivity(session.id);
 
     // Send hello immediately — waiting for the device hello races and closes 1006.
     sendHello(ws, session.id);
@@ -482,9 +561,8 @@ export function startWebsocketServer(): void {
 
     const pendingPlay = takePendingPlay();
     if (pendingPlay) {
-      const oggPath = path.join(process.cwd(), "tmp", "xiaozhi-test.ogg");
       setTimeout(() => {
-        void playAudioFileToDevice(pendingPlay, oggPath, session.id).catch((error: unknown) => {
+        void playAudioFileToDevice(pendingPlay, TEST_OGG_PATH, session.id).catch((error: unknown) => {
           console.error("[PLAY] pending clip failed", error);
         });
       }, 1500);
@@ -499,6 +577,7 @@ export function startWebsocketServer(): void {
         session.stubSentForBurst = false;
         const frame = Buffer.isBuffer(data) ? data : Buffer.from(data as ArrayBuffer);
         const meter = measureUplinkFrame(session.id, frame);
+        noteVoiceFrame(session.id, meter.level);
         const current = getConnection(session.id);
         patchConnection(session.id, {
           opusFrames: session.opusFrames,
@@ -510,10 +589,13 @@ export function startWebsocketServer(): void {
           levelHistory: pushLevel(current?.levelHistory ?? [], meter.level),
         });
         if (session.opusFrames === 1 || session.opusFrames % 25 === 0) {
-          console.log(`[WS] opus frames=${session.opusFrames} last_bytes=${bytes}`);
+          console.log(
+            `[WS] opus frames=${session.opusFrames} last_bytes=${bytes} level=${meter.level.toFixed(3)}`,
+          );
         }
-        if (realtime && meter.pcm) {
-          realtime.appendUplinkPcm(meter.pcm, meter.sampleRate);
+        const uplink = meter.rawPcm ?? meter.pcm;
+        if (realtime && uplink) {
+          realtime.appendUplinkPcm(uplink, meter.sampleRate);
         } else if (!realtime && !isPlaying(session.id) && !isListenPaused(session.id)) {
           armIdleStub(ws, session);
         }
@@ -526,7 +608,9 @@ export function startWebsocketServer(): void {
 
     ws.on("close", (code, reason) => {
       clearIdle(session);
+      clearIdleDisconnect(session.id);
       detachRealtimeBridge(session.id);
+      disposeDeviceMcp(session.id);
       deleteSessionSocket(session.id);
       disposeUplinkMeter(session.id);
       removeConnection(session.id);
@@ -541,6 +625,6 @@ export function startWebsocketServer(): void {
   });
 
   httpServer.listen(wsPort, BIND_HOST, () => {
-    console.log(`[WS] listening on ${BIND_HOST}:${wsPort} paths=/xiaozhi/v1 /listen-stream`);
+    console.log(`[WS] listening on ${BIND_HOST}:${wsPort} paths=/xiaozhi/v1 /listen-stream /realtime-test`);
   });
 }

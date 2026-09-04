@@ -1,5 +1,11 @@
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
-import { BIND_HOST, DEFAULT_FIRMWARE_VERSION, getServerConfig, getWebsocketUrl } from "./config";
+import {
+  BIND_HOST,
+  DEFAULT_FIRMWARE_VERSION,
+  getServerConfig,
+  getWebsocketUrl,
+  getWebsocketUrlForRequest,
+} from "./config";
 import { recordOtaSighting } from "./device-registry";
 
 const OTA_PATHS = new Set([
@@ -49,8 +55,8 @@ function firmwareVersionFromBody(raw: string): string {
   }
 }
 
-function buildOtaPayload(version: string) {
-  const websocketUrl = getWebsocketUrl();
+function buildOtaPayload(version: string, hostHeader = "") {
+  const websocketUrl = getWebsocketUrlForRequest(hostHeader);
   return {
     server_time: {
       timestamp: Date.now(),
@@ -77,6 +83,7 @@ function sendJson(res: ServerResponse, status: number, body: unknown): void {
     "Access-Control-Allow-Headers": "Content-Type, Device-Id, Client-Id, Authorization, Protocol-Version",
     "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
     "Cache-Control": "no-store",
+    Connection: "close",
   });
   res.end(json);
 }
@@ -115,7 +122,7 @@ async function handleOta(req: IncomingMessage, res: ServerResponse): Promise<voi
     }
   }
 
-  const payload = buildOtaPayload(version);
+  const payload = buildOtaPayload(version, header(req, "host"));
   const deviceId = header(req, "device-id");
   const clientId = header(req, "client-id");
 

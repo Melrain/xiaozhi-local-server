@@ -14,14 +14,14 @@ export async function POST(request: Request) {
 
   const query = sessionId ? `?session=${encodeURIComponent(sessionId)}` : "";
   try {
-    const res = await fetch(`http://127.0.0.1:${wsPort}/play${query}`, {
+    const res = await fetch(`http://127.0.0.1:${wsPort}/disconnect${query}`, {
       method: "POST",
       cache: "no-store",
     });
     const data = (await res.json()) as unknown;
-    return Response.json(data, { status: res.ok ? 200 : 500 });
+    return Response.json(data, { status: res.status });
   } catch (error: unknown) {
-    const message = error instanceof Error ? error.message : "play failed";
+    const message = error instanceof Error ? error.message : "disconnect failed";
     return Response.json({ ok: false, error: message }, { status: 500 });
   }
 }

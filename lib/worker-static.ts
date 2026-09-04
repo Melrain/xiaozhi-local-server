@@ -4,11 +4,16 @@ import path from "node:path";
 import {
   LISTEN_PLAYBACK_WORKLET_URL,
   LISTEN_WS_WORKER_URL,
+  MIC_CAPTURE_WORKLET_URL,
 } from "../worker/urls";
 
 const WORKER_DIR = path.resolve(process.cwd(), "worker");
 const WORKER_PREFIX = "/worker/";
-const REQUIRED_WORKERS = [LISTEN_WS_WORKER_URL, LISTEN_PLAYBACK_WORKLET_URL];
+const REQUIRED_WORKERS = [
+  LISTEN_WS_WORKER_URL,
+  LISTEN_PLAYBACK_WORKLET_URL,
+  MIC_CAPTURE_WORKLET_URL,
+];
 
 function workerFileFromUrl(urlPath: string): string | null {
   if (!urlPath.startsWith(WORKER_PREFIX)) return null;

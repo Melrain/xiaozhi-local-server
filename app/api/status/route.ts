@@ -8,6 +8,7 @@ function fallbackRealtime() {
   return {
     configured: config.configured,
     connected: false,
+    browserConnected: false,
     model: config.model,
     voice: config.voice,
     lastInterruptReason: "",

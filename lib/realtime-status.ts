@@ -3,6 +3,7 @@ import { getRealtimeConfig } from "./config";
 export type RealtimeStatus = {
   configured: boolean;
   connected: boolean;
+  browserConnected: boolean;
   model: string;
   voice: string;
   lastInterruptReason: string;
@@ -15,6 +16,7 @@ function fromConfig(): RealtimeStatus {
   return {
     configured: config.configured,
     connected: false,
+    browserConnected: false,
     model: config.model,
     voice: config.voice,
     lastInterruptReason: "",

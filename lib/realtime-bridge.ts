@@ -15,19 +15,23 @@ import {
   resamplePcmS16le,
   UPLINK_BAILIAN_RATE,
 } from "./opus-audio";
+import { noteDeviceActivity } from "./idle-disconnect";
 import { interruptPlayback } from "./play-audio";
 import {
   getRealtimeStatus,
   patchRealtimeStatus,
   resetRealtimeStatusFromConfig,
 } from "./realtime-status";
+import { buildRealtimeSessionUpdate } from "./realtime-session";
 import { getSessionSocket } from "./session-sockets";
 
 const BRIDGES_KEY = Symbol.for("xiaozhi.realtime-bridges");
 const RECONNECT_MIN_MS = 1000;
 const RECONNECT_MAX_MS = 15000;
 const PING_MS = 20000;
-const INPUT_TRANSCRIPTION_MODEL = "qwen3-asr-flash-realtime";
+const UPLINK_QUEUE_MAX_BYTES = 16000 * 2 * 2;
+const LOCAL_VAD_LEVEL = 0.018;
+const LOCAL_VAD_SILENCE_MS = 700;
 
 type BailianEvent = {
   type?: string;
@@ -48,6 +52,7 @@ function eventResponseId(event: BailianEvent): string | undefined {
 export type RealtimeBridge = {
   appendUplinkPcm(pcm: Buffer, sampleRate: number): void;
   interrupt(reason: string): void;
+  requestTurn(reason: string): void;
   dispose(): void;
   isConnected(): boolean;
 };
@@ -64,6 +69,17 @@ function bridges(): Map<string, SessionBridge> {
 
 function nextEventId(): string {
   return `event_${Date.now().toString(36)}_${randomUUID().slice(0, 8)}`;
+}
+
+function pcmLevel(pcm: Buffer): number {
+  const samples = pcm.length / 2;
+  if (samples <= 0) return 0;
+  let sum = 0;
+  for (let i = 0; i < pcm.length; i += 2) {
+    const sample = pcm.readInt16LE(i);
+    sum += sample * sample;
+  }
+  return Math.sqrt(sum / samples) / 32768;
 }
 
 function sendDeviceJson(sessionId: string, payload: unknown): void {
@@ -118,6 +134,13 @@ class SessionBridge implements RealtimeBridge {
   private activeResponseId: string | null = null;
   private cancelledResponseIds = new Set<string>();
   private downlinkGeneration = 0;
+  private sessionReady = false;
+  private uplinkQueue: Buffer[] = [];
+  private uplinkQueueBytes = 0;
+  private appendedBytes = 0;
+  private serverVadSeen = false;
+  private localSpeechSeen = false;
+  private lastLoudAt = 0;
 
   constructor(sessionId: string) {
     this.sessionId = sessionId;
@@ -128,19 +151,30 @@ class SessionBridge implements RealtimeBridge {
     return this.ws?.readyState === WebSocket.OPEN;
   }
 
+  private setResponding(value: boolean): void {
+    this.responding = value;
+    patchConnection(this.sessionId, { responding: value });
+    noteDeviceActivity(this.sessionId);
+  }
+
   appendUplinkPcm(pcm: Buffer, sampleRate: number): void {
     if (this.disposed || !pcm.length) return;
     if (isListenPaused(this.sessionId)) return;
-    if (!this.isConnected()) return;
     const input =
       sampleRate === UPLINK_BAILIAN_RATE
         ? pcm
         : resamplePcmS16le(pcm, sampleRate, UPLINK_BAILIAN_RATE);
     if (!input.length) return;
-    this.sendEvent({
-      type: "input_audio_buffer.append",
-      audio: input.toString("base64"),
-    });
+    this.observeLocalVad(input);
+    if (!this.sessionReady || !this.isConnected()) {
+      this.queueUplink(input);
+      return;
+    }
+    this.sendUplink(input);
+  }
+
+  requestTurn(reason: string): void {
+    this.triggerTurn(reason);
   }
 
   interrupt(reason: string): void {
@@ -158,6 +192,9 @@ class SessionBridge implements RealtimeBridge {
   dispose(): void {
     if (this.disposed) return;
     this.disposed = true;
+    this.sessionReady = false;
+    this.uplinkQueue = [];
+    this.uplinkQueueBytes = 0;
     this.clearTimers();
     this.stopDeviceTts();
     const socket = this.ws;
@@ -184,6 +221,7 @@ class SessionBridge implements RealtimeBridge {
 
     this.connectGeneration += 1;
     const generation = this.connectGeneration;
+    this.sessionReady = false;
     this.teardownSocket();
 
     console.log(
@@ -203,6 +241,11 @@ class SessionBridge implements RealtimeBridge {
       patchConnection(this.sessionId, { realtimeConnected: true });
       refreshConnectedFlag();
       console.log(`[REALTIME] connected session=${this.sessionId.slice(0, 8)}`);
+      setTimeout(() => {
+        if (generation !== this.connectGeneration || this.disposed || this.sessionReady) return;
+        console.warn(`[REALTIME] session.updated timeout, start uplink anyway session=${this.sessionId.slice(0, 8)}`);
+        this.markSessionReady();
+      }, 2000);
     });
 
     ws.on("message", (data) => {
@@ -224,25 +267,68 @@ class SessionBridge implements RealtimeBridge {
   }
 
   private sendSessionUpdate(): void {
-    const config = getRealtimeConfig();
+    this.sendEvent(buildRealtimeSessionUpdate(getRealtimeConfig()));
+  }
+
+  private queueUplink(pcm: Buffer): void {
+    this.uplinkQueue.push(pcm);
+    this.uplinkQueueBytes += pcm.length;
+    while (this.uplinkQueueBytes > UPLINK_QUEUE_MAX_BYTES && this.uplinkQueue.length > 1) {
+      const dropped = this.uplinkQueue.shift();
+      if (dropped) this.uplinkQueueBytes -= dropped.length;
+    }
+  }
+
+  private sendUplink(pcm: Buffer): void {
+    this.appendedBytes += pcm.length;
     this.sendEvent({
-      type: "session.update",
-      session: {
-        modalities: ["text", "audio"],
-        voice: config.voice,
-        instructions: config.instructions,
-        audio: {
-          input: { format: { type: "pcm", sample_rate: UPLINK_BAILIAN_RATE } },
-          output: { format: { type: "pcm", sample_rate: DOWNLINK_SAMPLE_RATE } },
-        },
-        input_audio_transcription: { model: INPUT_TRANSCRIPTION_MODEL },
-        turn_detection: {
-          type: "semantic_vad",
-          threshold: 0.5,
-          silence_duration_ms: 800,
-        },
-      },
+      type: "input_audio_buffer.append",
+      audio: pcm.toString("base64"),
     });
+  }
+
+  private flushUplinkQueue(): void {
+    if (!this.sessionReady || !this.isConnected()) return;
+    const queued = this.uplinkQueue;
+    this.uplinkQueue = [];
+    this.uplinkQueueBytes = 0;
+    for (const chunk of queued) {
+      this.sendUplink(chunk);
+    }
+  }
+
+  private markSessionReady(): void {
+    if (this.sessionReady) return;
+    this.sessionReady = true;
+    this.flushUplinkQueue();
+    patchConnection(this.sessionId, { realtimeConnected: true });
+    refreshConnectedFlag();
+    console.log(`[REALTIME] session ready session=${this.sessionId.slice(0, 8)}`);
+  }
+
+  private observeLocalVad(pcm: Buffer): void {
+    if (this.serverVadSeen || this.responding || this.ttsActive) return;
+    const level = pcmLevel(pcm);
+    const now = Date.now();
+    if (level >= LOCAL_VAD_LEVEL) {
+      this.localSpeechSeen = true;
+      this.lastLoudAt = now;
+      return;
+    }
+    if (this.localSpeechSeen && this.lastLoudAt && now - this.lastLoudAt >= LOCAL_VAD_SILENCE_MS) {
+      this.localSpeechSeen = false;
+      this.triggerTurn("local_vad");
+    }
+  }
+
+  private triggerTurn(reason: string): void {
+    if (this.disposed || !this.sessionReady || !this.isConnected()) return;
+    if (this.responding || this.ttsActive) return;
+    if (this.appendedBytes < 3200) return;
+    console.log(`[REALTIME] turn reason=${reason} session=${this.sessionId.slice(0, 8)}`);
+    this.sendEvent({ type: "input_audio_buffer.commit" });
+    this.sendEvent({ type: "response.create" });
+    this.appendedBytes = 0;
   }
 
   private sendEvent(event: Record<string, unknown>): void {
@@ -266,18 +352,21 @@ class SessionBridge implements RealtimeBridge {
         console.error("[REALTIME] bailian error event", event.error);
         break;
       case "session.created":
-      case "session.updated":
         patchConnection(this.sessionId, { realtimeConnected: true });
         refreshConnectedFlag();
+        break;
+      case "session.updated":
+        this.markSessionReady();
         break;
       case "response.created":
         this.activeResponseId = eventResponseId(event) ?? `anon_${this.outputGeneration}`;
         this.acceptedGeneration = this.outputGeneration;
-        this.responding = true;
+        this.setResponding(true);
         this.audioFinished = false;
         this.sentenceText = "";
         this.sentenceSent = false;
         this.announcedSentence = "";
+        console.log(`[REALTIME] response.created session=${this.sessionId.slice(0, 8)}`);
         break;
       case "response.audio.delta":
         this.onAudioDelta(event);
@@ -289,7 +378,7 @@ class SessionBridge implements RealtimeBridge {
         this.finishTurnIfIdle();
         break;
       case "response.done":
-        this.responding = false;
+        this.setResponding(false);
         if (!this.acceptOutput(event)) break;
         this.audioFinished = true;
         this.enqueueFrames(this.encoder.flush());
@@ -299,7 +388,7 @@ class SessionBridge implements RealtimeBridge {
         const cancelledId = eventResponseId(event) || this.activeResponseId;
         if (cancelledId) this.cancelledResponseIds.add(cancelledId);
         this.invalidateOutput();
-        this.responding = false;
+        this.setResponding(false);
         this.encoder.reset();
         if (this.ttsActive || this.outbound.length > 0) {
           this.stopDeviceTts();
@@ -325,6 +414,9 @@ class SessionBridge implements RealtimeBridge {
           this.announcedSentence = this.sentenceText.trim();
         }
         if (this.sentenceText) {
+          console.log(
+            `[REALTIME] llm ${JSON.stringify(this.sentenceText.trim())} session=${this.sessionId.slice(0, 8)}`,
+          );
           sendDeviceJson(this.sessionId, {
             session_id: this.sessionId,
             type: "llm",
@@ -350,14 +442,21 @@ class SessionBridge implements RealtimeBridge {
         const text = event.transcript || event.text || this.inputTranscript;
         this.inputTranscript = "";
         if (text) {
+          console.log(`[REALTIME] stt ${JSON.stringify(text)} session=${this.sessionId.slice(0, 8)}`);
           sendDeviceJson(this.sessionId, { session_id: this.sessionId, type: "stt", text });
         }
         break;
       }
       case "input_audio_buffer.speech_started":
+        this.serverVadSeen = true;
+        this.localSpeechSeen = false;
+        console.log(`[REALTIME] speech_started session=${this.sessionId.slice(0, 8)}`);
         if (this.ttsActive || this.responding || this.outbound.length > 0 || isPlaying(this.sessionId)) {
           this.interrupt("speech_started");
         }
+        break;
+      case "input_audio_buffer.speech_stopped":
+        console.log(`[REALTIME] speech_stopped session=${this.sessionId.slice(0, 8)}`);
         break;
       default:
         break;
@@ -389,6 +488,7 @@ class SessionBridge implements RealtimeBridge {
     this.audioFinished = false;
     this.downlinkGeneration = claimDownlink(this.sessionId, "realtime");
     patchConnection(this.sessionId, { playing: true });
+    noteDeviceActivity(this.sessionId);
     sendDeviceJson(this.sessionId, { session_id: this.sessionId, type: "tts", state: "start" });
     sendDeviceJson(this.sessionId, {
       session_id: this.sessionId,
@@ -442,7 +542,7 @@ class SessionBridge implements RealtimeBridge {
     if (!this.ttsActive) return;
     if (!isDownlinkOwner(this.sessionId, this.downlinkGeneration, "realtime")) {
       this.ttsActive = false;
-      this.responding = false;
+      this.setResponding(false);
       return;
     }
     if (!this.sentenceSent) {
@@ -456,9 +556,10 @@ class SessionBridge implements RealtimeBridge {
     }
     sendDeviceJson(this.sessionId, { session_id: this.sessionId, type: "tts", state: "stop" });
     this.ttsActive = false;
-    this.responding = false;
+    this.setResponding(false);
     if (releaseDownlink(this.sessionId, this.downlinkGeneration, "realtime")) {
       patchConnection(this.sessionId, { playing: false });
+      noteDeviceActivity(this.sessionId);
     }
     console.log(`[REALTIME] tts stop session=${this.sessionId.slice(0, 8)}`);
   }
@@ -542,7 +643,7 @@ class SessionBridge implements RealtimeBridge {
       sendDeviceJson(this.sessionId, { session_id: this.sessionId, type: "tts", state: "stop" });
     }
     this.ttsActive = false;
-    this.responding = false;
+    this.setResponding(false);
     this.audioFinished = false;
     this.sentenceText = "";
     this.sentenceSent = false;
@@ -552,11 +653,13 @@ class SessionBridge implements RealtimeBridge {
       ...(ownedByPlay ? {} : { playing: false }),
       ...(reason ? { lastInterruptReason: reason } : {}),
     });
+    if (!ownedByPlay) noteDeviceActivity(this.sessionId);
     if (reason) patchRealtimeStatus({ lastInterruptReason: reason });
   }
 
   private handleDrop(): void {
     this.stopPing();
+    this.sessionReady = false;
     this.ws = null;
     const reason = this.ttsActive || this.outbound.length > 0 ? "bailian_drop" : undefined;
     this.stopDeviceTts(reason);

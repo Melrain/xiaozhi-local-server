@@ -1,12 +1,12 @@
-"use client";
+'use client';
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState } from 'react';
 import {
   LISTEN_PLAYBACK_WORKLET_URL,
   LISTEN_WS_WORKER_URL,
-} from "@/worker/urls";
+} from '@/worker/urls';
 
-export type ListenStreamState = "idle" | "connecting" | "live";
+export type ListenStreamState = 'idle' | 'connecting' | 'live';
 
 type UseListenPlaybackOptions = {
   enabled: boolean;
@@ -19,14 +19,20 @@ export function useListenPlayback({
   sessionId,
   wsPort,
 }: UseListenPlaybackOptions) {
-  const [streamState, setStreamState] = useState<ListenStreamState>("idle");
-  const [streamError, setStreamError] = useState("");
+  const listenKey = enabled && sessionId ? `${sessionId}:${wsPort}` : '';
+  const [streamState, setStreamState] = useState<ListenStreamState>('idle');
+  const [streamError, setStreamError] = useState('');
+  const [prevListenKey, setPrevListenKey] = useState(listenKey);
   const audioRef = useRef<AudioContext | null>(null);
   const workletReadyRef = useRef<Promise<void> | null>(null);
 
+  if (prevListenKey !== listenKey) {
+    setPrevListenKey(listenKey);
+    setStreamState('idle');
+  }
+
   useEffect(() => {
-    if (!enabled || !sessionId) {
-      setStreamState("idle");
+    if (!listenKey || !sessionId) {
       return;
     }
 
@@ -36,12 +42,11 @@ export function useListenPlayback({
     let node: AudioWorkletNode | null = null;
 
     async function start() {
-      const ctx =
-        audioRef.current ?? new AudioContext({ sampleRate: 16000 });
+      const ctx = audioRef.current ?? new AudioContext({ sampleRate: 16000 });
       audioRef.current = ctx;
       try {
         workletReadyRef.current ??= ctx.audioWorklet.addModule(
-          LISTEN_PLAYBACK_WORKLET_URL,
+          LISTEN_PLAYBACK_WORKLET_URL
         );
         await workletReadyRef.current;
       } catch (error) {
@@ -51,7 +56,7 @@ export function useListenPlayback({
       await ctx.resume();
       if (cancelled) return;
 
-      node = new AudioWorkletNode(ctx, "listen-playback-processor", {
+      node = new AudioWorkletNode(ctx, 'listen-playback-processor', {
         numberOfInputs: 0,
         numberOfOutputs: 1,
         outputChannelCount: [1],
@@ -65,43 +70,44 @@ export function useListenPlayback({
         return;
       }
       const channel = new MessageChannel();
-      node.port.postMessage({ type: "bind" }, [channel.port1]);
-      worker.postMessage({ type: "bind-playback" }, [channel.port2]);
+      node.port.postMessage({ type: 'bind' }, [channel.port1]);
+      worker.postMessage({ type: 'bind-playback' }, [channel.port2]);
       worker.onmessage = (event: MessageEvent) => {
         const message = event.data as {
           type?: string;
           state?: ListenStreamState;
           message?: string;
         };
-        if (message.type === "state" && message.state) {
+        if (message.type === 'state' && message.state) {
           setStreamState(message.state);
-        } else if (message.type === "error" && message.message) {
+        } else if (message.type === 'error' && message.message) {
           setStreamError(message.message);
-          setStreamState("idle");
+          setStreamState('idle');
         }
       };
 
-      const url = `ws://${window.location.hostname}:${wsPort}/listen-stream?session=${encodeURIComponent(activeSessionId)}`;
-      setStreamError("");
-      setStreamState("connecting");
-      worker.postMessage({ type: "connect", url });
+      const url = `ws://${
+        window.location.hostname
+      }:${wsPort}/listen-stream?session=${encodeURIComponent(activeSessionId)}`;
+      setStreamError('');
+      setStreamState('connecting');
+      worker.postMessage({ type: 'connect', url });
     }
 
     void start().catch((error: unknown) => {
       if (cancelled) return;
-      setStreamError(error instanceof Error ? error.message : "试听启动失败");
-      setStreamState("idle");
+      setStreamError(error instanceof Error ? error.message : '试听启动失败');
+      setStreamState('idle');
     });
 
     return () => {
       cancelled = true;
-      worker?.postMessage({ type: "disconnect" });
+      worker?.postMessage({ type: 'disconnect' });
       worker?.terminate();
-      node?.port.postMessage({ type: "reset" });
+      node?.port.postMessage({ type: 'reset' });
       node?.disconnect();
-      setStreamState("idle");
     };
-  }, [enabled, sessionId, wsPort]);
+  }, [listenKey, sessionId, wsPort]);
 
   useEffect(() => {
     return () => {

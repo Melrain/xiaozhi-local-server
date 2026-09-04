@@ -6,6 +6,7 @@ import { getConnection, removeConnection, upsertConnection } from "./device-regi
 import {
   attachRealtimeBridge,
   detachRealtimeBridge,
+  getRealtimeBridge,
   interruptRealtime,
 } from "./realtime-bridge";
 import { setSessionSocket } from "./session-sockets";
@@ -43,6 +44,7 @@ async function waitFor(
 type Harness = {
   sessionId: string;
   deviceMessages: Array<Record<string, unknown>>;
+  bailianMessages: Array<Record<string, unknown>>;
   sendBailian: (event: Record<string, unknown>) => void;
   closeBailian: () => void;
   close: () => Promise<void>;
@@ -52,6 +54,7 @@ const harnesses: Harness[] = [];
 
 async function startHarness(): Promise<Harness> {
   const deviceMessages: Array<Record<string, unknown>> = [];
+  const bailianMessages: Array<Record<string, unknown>> = [];
   let bailianSink: (event: Record<string, unknown>) => void = () => undefined;
   const sendBailian = (event: Record<string, unknown>) => bailianSink(event);
 
@@ -63,7 +66,8 @@ async function startHarness(): Promise<Harness> {
     };
     ws.send(JSON.stringify({ type: "session.created" }));
     ws.on("message", (data) => {
-      const event = JSON.parse(String(data)) as { type?: string };
+      const event = JSON.parse(String(data)) as Record<string, unknown>;
+      bailianMessages.push(event);
       if (event.type === "session.update") {
         ws.send(JSON.stringify({ type: "session.updated" }));
       }
@@ -127,6 +131,7 @@ async function startHarness(): Promise<Harness> {
   const harness: Harness = {
     sessionId,
     deviceMessages,
+    bailianMessages,
     sendBailian,
     closeBailian: () => {
       for (const client of bailianWss.clients) client.close();
@@ -157,6 +162,22 @@ afterEach(async () => {
 function ttsStates(messages: Array<Record<string, unknown>>): string[] {
   return messages.filter((message) => message.type === "tts").map((message) => String(message.state));
 }
+
+test("session.update uses server VAD and uplink only after session.updated", async () => {
+  const harness = await startHarness();
+  await waitFor(() => harness.bailianMessages.some((message) => message.type === "session.update"));
+  const update = harness.bailianMessages.find((message) => message.type === "session.update");
+  const session = update?.session as { turn_detection?: { type?: string; create_response?: boolean } };
+  assert.equal(session?.turn_detection?.type, "server_vad");
+  assert.equal(session?.turn_detection?.create_response, true);
+
+  const before = harness.bailianMessages.filter((message) => message.type === "input_audio_buffer.append").length;
+  getRealtimeBridge(harness.sessionId)?.appendUplinkPcm(Buffer.alloc(1920, 1), 16000);
+  await waitFor(
+    () =>
+      harness.bailianMessages.filter((message) => message.type === "input_audio_buffer.append").length > before,
+  );
+});
 
 test("interrupt ignores cancelled response audio deltas", async () => {
   const harness = await startHarness();

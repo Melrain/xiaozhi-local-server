@@ -1,15 +1,30 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { Cpu, CircleAlert } from "lucide-react";
+import { useEffect, useRef, useState } from "react";
+import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
 import {
   Card,
+  CardAction,
   CardContent,
   CardDescription,
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
-import type { DeviceStatusSnapshot } from "@/lib/device-registry";
+import {
+  Empty,
+  EmptyDescription,
+  EmptyHeader,
+  EmptyMedia,
+  EmptyTitle,
+} from "@/components/ui/empty";
+import { DeviceVolume } from "@/components/device-volume";
+import { Separator } from "@/components/ui/separator";
+import { Skeleton } from "@/components/ui/skeleton";
+import type { ConnectedDevice, DeviceStatusSnapshot } from "@/lib/device-registry";
+import { cn } from "@/lib/utils";
 
 const POLL_MS = 2000;
 
@@ -37,12 +52,38 @@ function shortId(value: string): string {
   return value;
 }
 
-export function DeviceStatus() {
+function sameDevice(a: ConnectedDevice, b: ConnectedDevice): boolean {
+  return a.deviceId !== "-" && b.deviceId !== "-" && a.deviceId === b.deviceId;
+}
+
+function nextKicked(
+  prev: ConnectedDevice | null,
+  live: ConnectedDevice[],
+  previous: ConnectedDevice[],
+): ConnectedDevice | null {
+  if (prev) {
+    const replaced = live.some(
+      (device) => device.sessionId !== prev.sessionId && sameDevice(device, prev),
+    );
+    return replaced ? null : prev;
+  }
+  if (live.length > 0) return null;
+  return previous.find((device) => !live.some((current) => current.sessionId === device.sessionId)) ?? null;
+}
+
+type DeviceStatusProps = {
+  className?: string;
+};
+
+export function DeviceStatus({ className }: DeviceStatusProps) {
   const [status, setStatus] = useState<DeviceStatusSnapshot | null>(null);
   const [error, setError] = useState(false);
   const [now, setNow] = useState(() => Date.now());
   const [playing, setPlaying] = useState(false);
   const [playMessage, setPlayMessage] = useState("");
+  const [disconnectingId, setDisconnectingId] = useState<string | null>(null);
+  const [kicked, setKicked] = useState<ConnectedDevice | null>(null);
+  const lastDevicesRef = useRef<ConnectedDevice[]>([]);
 
   useEffect(() => {
     let cancelled = false;
@@ -53,6 +94,8 @@ export function DeviceStatus() {
         if (!res.ok) throw new Error("status failed");
         const data = (await res.json()) as DeviceStatusSnapshot;
         if (cancelled) return;
+        setKicked((prev) => nextKicked(prev, data.devices, lastDevicesRef.current));
+        lastDevicesRef.current = data.devices;
         setStatus(data);
         setError(false);
         setNow(Date.now());
@@ -72,11 +115,38 @@ export function DeviceStatus() {
     };
   }, []);
 
-  async function playTest() {
+  async function disconnectWs(device: ConnectedDevice) {
+    setDisconnectingId(device.sessionId);
+    setKicked(device);
+    try {
+      const res = await fetch("/api/disconnect", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ sessionId: device.sessionId }),
+      });
+      const data = (await res.json()) as { ok?: boolean; error?: string };
+      if (!res.ok || !data.ok) {
+        if (res.status === 409) return;
+        setKicked(null);
+        setPlayMessage(data.error || "断开失败");
+      }
+    } catch {
+      setKicked(null);
+      setPlayMessage("断开失败");
+    } finally {
+      setDisconnectingId(null);
+    }
+  }
+
+  async function playTest(sessionId: string) {
     setPlaying(true);
     setPlayMessage("");
     try {
-      const res = await fetch("/api/play", { method: "POST" });
+      const res = await fetch("/api/play", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ sessionId }),
+      });
       const data = (await res.json()) as { ok?: boolean; queued?: boolean; frames?: number; error?: string };
       if (!res.ok || !data.ok) {
         setPlayMessage(data.error || "下发失败");
@@ -94,119 +164,167 @@ export function DeviceStatus() {
     }
   }
 
-  const connectedCount = status?.connectedCount ?? 0;
+  const liveDevices = (status?.devices ?? []).filter(
+    (device) => device.sessionId !== kicked?.sessionId,
+  );
+  const replacement = kicked
+    ? liveDevices.find(
+        (device) =>
+          device.deviceId !== "-" &&
+          kicked.deviceId !== "-" &&
+          device.deviceId === kicked.deviceId,
+      )
+    : undefined;
+  const displayDevices = replacement
+    ? liveDevices
+    : liveDevices.length > 0
+      ? liveDevices
+      : kicked
+        ? [kicked]
+        : [];
+  const kickedVisible = Boolean(kicked && !replacement && liveDevices.length === 0);
+  const connectedCount = liveDevices.length;
   const online = connectedCount > 0;
 
   return (
-    <Card>
+    <Card className={cn("md:h-full md:min-h-0 md:overflow-hidden", className)}>
       <CardHeader>
-        <div className="flex items-start justify-between gap-3">
-          <div className="space-y-1.5">
-            <CardTitle>ESP32 设备</CardTitle>
-            <CardDescription>
-              WebSocket 连上才算出在线。开机后的 OTA 请求会记在下面，方便确认板子有没有找到这台机器。
-            </CardDescription>
-          </div>
+        <CardTitle>ESP32 设备</CardTitle>
+        <CardDescription>
+          WebSocket 连上才算出在线。空闲 30 秒会自动断开，再说唤醒词即可连上。
+        </CardDescription>
+        <CardAction>
           {error ? (
             <Badge variant="offline">状态读取失败</Badge>
           ) : online ? (
             <Badge variant="connected">
-              <span className="size-1.5 rounded-full bg-emerald-500" aria-hidden />
+              <span className="size-1.5 rounded-full bg-current" aria-hidden />
               {connectedCount} 台在线
             </Badge>
+          ) : kickedVisible ? (
+            <Badge variant="offline">已断开</Badge>
           ) : (
             <Badge variant="offline">
               <span className="size-1.5 rounded-full bg-muted-foreground/50" aria-hidden />
               暂无设备
             </Badge>
           )}
-        </div>
+        </CardAction>
       </CardHeader>
-      <CardContent className="space-y-4">
-        {status?.realtime ? (
-          <div className="rounded-lg border border-border bg-background px-3 py-3">
-            <div className="flex items-center justify-between gap-3">
-              <p className="text-sm font-medium">Qwen-Omni Realtime</p>
-              {status.realtime.configured ? (
-                <Badge variant={status.realtime.connected ? "connected" : "offline"}>
-                  {status.realtime.connected ? "已连接" : "未连接"}
-                </Badge>
-              ) : (
-                <Badge variant="offline">未配置</Badge>
-              )}
-            </div>
-            <p className="mt-2 text-xs leading-6 text-muted-foreground">
-              模型 {status.realtime.model || "-"}
-              {status.realtime.voice ? ` · 音色 ${status.realtime.voice}` : ""}
-            </p>
-            <p className="text-xs text-muted-foreground">
-              上次打断：{status.realtime.lastInterruptReason || "无"}
-            </p>
+      <CardContent className="flex min-h-0 flex-col gap-3 md:flex-1 md:overflow-y-auto">
+        {status === null && !error ? (
+          <div className="flex flex-col gap-2">
+            <Skeleton className="h-16 w-full" />
+            <Skeleton className="h-10 w-2/3" />
           </div>
         ) : null}
 
-        {status === null && !error ? (
-          <p className="text-sm text-muted-foreground">正在检查连接…</p>
+        {error ? (
+          <Alert variant="destructive">
+            <CircleAlert />
+            <AlertTitle>状态读取失败</AlertTitle>
+            <AlertDescription>稍后会自动重试 /api/status。</AlertDescription>
+          </Alert>
         ) : null}
 
-        {status && status.devices.length === 0 ? (
-          <p className="text-sm leading-6 text-muted-foreground">
-            还没有 ESP32 连上 WebSocket。板子会先打 OTA 拿地址，按 BOOT 才会建立音频通道。
-          </p>
+        {status && displayDevices.length === 0 ? (
+          <Empty className="gap-3 border-0 p-4 md:flex-1 md:p-6">
+            <EmptyHeader>
+              <EmptyMedia variant="icon">
+                <Cpu />
+              </EmptyMedia>
+              <EmptyTitle>还没有设备</EmptyTitle>
+              <EmptyDescription>
+                板子会先打 OTA 拿地址，说唤醒词后会建立音频通道。按 BOOT 也可以手动连上。
+              </EmptyDescription>
+            </EmptyHeader>
+          </Empty>
         ) : null}
 
-        {status?.devices.map((device) => (
+        {displayDevices.map((device) => {
+          const disconnected = kickedVisible && device.sessionId === kicked?.sessionId;
+          return (
           <div
-            key={device.sessionId}
-            className="rounded-lg border border-border bg-muted/60 px-3 py-3"
+            key={device.deviceId !== "-" ? device.deviceId : device.sessionId}
+            className="flex flex-col gap-3 rounded-lg border border-border bg-muted/60 px-3 py-3"
           >
-            <div className="flex items-center justify-between gap-3">
-              <p className="font-mono text-sm break-all">
-                {shortId(device.deviceId)}
-              </p>
-              <Badge variant="connected">在线</Badge>
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <p className="font-mono text-sm break-all">{shortId(device.deviceId)}</p>
+              <div className="flex items-center gap-2">
+                <Badge variant={disconnected ? "offline" : "connected"}>
+                  {disconnected ? "已断开" : "在线"}
+                </Badge>
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="outline"
+                  className="min-w-20"
+                  onClick={() => void disconnectWs(device)}
+                  disabled={playing || disconnected || disconnectingId === device.sessionId}
+                >
+                  {disconnected
+                    ? "已断开"
+                    : disconnectingId === device.sessionId
+                      ? "正在断开…"
+                      : "断开连接"}
+                </Button>
+              </div>
             </div>
-            <p className="mt-2 text-xs leading-6 text-muted-foreground">
-              {device.remoteAddress || "未知 IP"} · {formatDuration(device.connectedAt, now)} ·
-              Opus {device.opusFrames} 帧 · 最近活动 {formatRelative(device.lastMessageAt, now)}
-            </p>
+            <DeviceVolume
+              sessionId={device.sessionId}
+              speakerVolume={device.speakerVolume}
+              mcpReady={device.mcpReady}
+              mcpError={device.mcpError}
+              disabled={disconnected || disconnectingId === device.sessionId}
+            />
+            <div className="flex flex-wrap gap-x-3 gap-y-1 text-xs text-muted-foreground">
+              <span>{device.remoteAddress || "未知 IP"}</span>
+              <span>{disconnected ? "已断开" : formatDuration(device.connectedAt, now)}</span>
+              <span>Opus {device.opusFrames} 帧</span>
+              <span>最近 {formatRelative(device.lastMessageAt, now)}</span>
+            </div>
             <p className="text-xs text-muted-foreground">
               Client {shortId(device.clientId)}
               {device.protocolVersion ? ` · 协议 ${device.protocolVersion}` : ""}
+              {status?.realtime
+                ? ` · Realtime ${
+                    disconnected || !(device.realtimeConnected || status.realtime.connected)
+                      ? "未连接"
+                      : "已连接"
+                  }`
+                : ""}
+              {status?.realtime?.lastInterruptReason || device.lastInterruptReason
+                ? ` · 上次打断 ${device.lastInterruptReason || status?.realtime?.lastInterruptReason}`
+                : ""}
             </p>
-            {status?.realtime ? (
-              <p className="mt-1 text-xs leading-6 text-muted-foreground">
-                Realtime {device.realtimeConnected || status.realtime.connected ? "已连接" : "未连接"}
-                {status.realtime.model ? ` · ${status.realtime.model}` : ""}
-                {status.realtime.lastInterruptReason || device.lastInterruptReason
-                  ? ` · 上次打断 ${device.lastInterruptReason || status.realtime.lastInterruptReason}`
-                  : ""}
-              </p>
-            ) : null}
-            <button
-              type="button"
-              onClick={() => void playTest()}
-              disabled={playing}
-              className="mt-3 rounded-lg bg-foreground px-3 py-1.5 text-xs text-background disabled:opacity-50"
-            >
-              {playing ? "正在下发…" : "播放测试语音"}
-            </button>
-            {playMessage ? (
-              <p className="mt-2 text-xs text-muted-foreground">{playMessage}</p>
-            ) : null}
+            <div className="flex flex-wrap items-center gap-2">
+              <Button
+                type="button"
+                size="sm"
+                onClick={() => void playTest(device.sessionId)}
+                disabled={playing || disconnected || disconnectingId === device.sessionId}
+              >
+                {playing ? "正在下发…" : "播放测试语音"}
+              </Button>
+              {playMessage ? (
+                <p className="text-xs text-muted-foreground">{playMessage}</p>
+              ) : null}
+            </div>
           </div>
-        ))}
+          );
+        })}
 
         {status && status.recentOta.length > 0 ? (
-          <div className="space-y-2">
+          <div className="flex flex-col gap-2">
+            <Separator />
             <p className="text-xs tracking-wide text-muted-foreground uppercase">
               最近 OTA（尚未建立音频通道）
             </p>
-            <ul className="space-y-2">
+            <ul className="flex flex-col gap-2">
               {status.recentOta.map((sighting) => (
                 <li
                   key={`${sighting.deviceId}:${sighting.clientId}:${sighting.lastSeenAt}`}
-                  className="rounded-lg bg-muted px-3 py-3 text-sm"
+                  className="rounded-lg bg-muted px-3 py-2 text-sm"
                 >
                   <p className="font-mono text-[13px] break-all">
                     {shortId(sighting.deviceId)}

@@ -13,6 +13,7 @@ export type ConnectedDevice = {
   lastMessageAt: number;
   opusFrames: number;
   playing?: boolean;
+  responding?: boolean;
   listenPaused?: boolean;
   listenState: string;
   listenMode: string;
@@ -23,6 +24,9 @@ export type ConnectedDevice = {
   levelHistory: number[];
   realtimeConnected?: boolean;
   lastInterruptReason?: string;
+  speakerVolume?: number;
+  mcpReady?: boolean;
+  mcpError?: string;
 };
 
 export type OtaSighting = {
@@ -112,6 +116,11 @@ export function removeConnection(sessionId: string): void {
 
 export function isPlaying(sessionId: string): boolean {
   return getStore().connections.get(sessionId)?.playing === true;
+}
+
+export function isSessionBusy(sessionId: string): boolean {
+  const current = getStore().connections.get(sessionId);
+  return current?.playing === true || current?.responding === true;
 }
 
 export function isListenPaused(sessionId: string): boolean {

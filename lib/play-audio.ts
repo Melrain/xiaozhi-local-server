@@ -1,5 +1,8 @@
+import { mkdir } from "node:fs/promises";
+import path from "node:path";
 import { WebSocket } from "ws";
 import { isPlaying, patchConnection } from "./device-registry";
+import { noteDeviceActivity } from "./idle-disconnect";
 import {
   claimDownlink,
   isDownlinkOwner,
@@ -13,6 +16,8 @@ import {
 
 const FRAME_MS = 60;
 const TEST_SENTENCE = "你好，我是小智本地服务。如果你能听到这段话，说明喇叭已经通了。";
+export const TEST_WAV_PATH = path.join(process.cwd(), "public", "xiaozhi-test.wav");
+export const TEST_OGG_PATH = path.join(process.cwd(), "tmp", "xiaozhi-test.ogg");
 
 export function bumpPlayGeneration(sessionId: string): number {
   return claimDownlink(sessionId, "none");
@@ -50,6 +55,7 @@ export async function playOpusToSession(
 
   const generation = claimDownlink(sessionId, "play");
   patchConnection(sessionId, { playing: true });
+  noteDeviceActivity(sessionId);
   sendJson(ws, { session_id: sessionId, type: "tts", state: "start" });
   sendJson(ws, { session_id: sessionId, type: "tts", state: "sentence_start", text });
 
@@ -72,6 +78,7 @@ export async function playOpusToSession(
     if (isDownlinkOwner(sessionId, generation, "play")) {
       claimDownlink(sessionId, "none");
       patchConnection(sessionId, { playing: false });
+      noteDeviceActivity(sessionId);
     }
   }
 }
@@ -84,6 +91,7 @@ export function interruptPlayback(sessionId: string): boolean {
     sendJson(ws, { session_id: sessionId, type: "tts", state: "stop" });
   }
   patchConnection(sessionId, { playing: false });
+  noteDeviceActivity(sessionId);
   return true;
 }
 
@@ -102,6 +110,7 @@ export async function playAudioFileToDevice(
     return { ok: true, queued: true };
   }
 
+  await mkdir(path.dirname(oggPath), { recursive: true });
   const frames = await audioFileToOpusFrames(filePath, oggPath);
   await playOpusToSession(target.sessionId, frames);
   return { ok: true, sessionId: target.sessionId, frames: frames.length };

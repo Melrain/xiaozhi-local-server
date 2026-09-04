@@ -42,8 +42,32 @@ export function getServerConfig(): ServerConfig {
   };
 }
 
+/** Hostname from an HTTP Host header (`192.168.50.189:8002` → `192.168.50.189`). */
+export function hostFromHeader(hostHeader: string): string {
+  const raw = hostHeader.trim();
+  if (!raw) return "";
+  if (raw.startsWith("[")) {
+    const end = raw.indexOf("]");
+    return end > 0 ? raw.slice(1, end) : raw;
+  }
+  const lastColon = raw.lastIndexOf(":");
+  if (lastColon > 0 && /^\d+$/.test(raw.slice(lastColon + 1))) {
+    return raw.slice(0, lastColon);
+  }
+  return raw;
+}
+
 export function getWebsocketUrl(config: ServerConfig = getServerConfig()): string {
   return `ws://${config.advertiseHost}:${config.wsPort}/xiaozhi/v1/`;
+}
+
+/** Prefer the host the device just used for OTA, so a stale ADVERTISE_HOST cannot break audio. */
+export function getWebsocketUrlForRequest(
+  hostHeader: string,
+  config: ServerConfig = getServerConfig(),
+): string {
+  const host = hostFromHeader(hostHeader) || config.advertiseHost;
+  return `ws://${host}:${config.wsPort}/xiaozhi/v1/`;
 }
 
 export function getOtaUrl(config: ServerConfig = getServerConfig()): string {

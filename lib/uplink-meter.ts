@@ -183,6 +183,7 @@ export function measureUplinkFrame(sessionId: string, frame: Buffer): {
   level: number;
   framesPerSec: number;
   pcm: Buffer | null;
+  rawPcm: Buffer | null;
   sampleRate: number;
 } {
   const now = Date.now();
@@ -198,9 +199,10 @@ export function measureUplinkFrame(sessionId: string, frame: Buffer): {
     pushPcm(sessionId, cleaned);
     broadcastUplinkPcm(sessionId, cleaned, sampleRate);
     return {
-      level: pcmRms(cleaned),
+      level: pcmRms(pcm),
       framesPerSec: recent.length,
       pcm: cleaned,
+      rawPcm: pcm,
       sampleRate,
     };
   }
@@ -208,6 +210,7 @@ export function measureUplinkFrame(sessionId: string, frame: Buffer): {
     level: 0,
     framesPerSec: recent.length,
     pcm: null,
+    rawPcm: null,
     sampleRate: decoderMap().get(sessionId)?.sampleRate ?? 16000,
   };
 }

@@ -1,17 +1,28 @@
 "use client";
 
+import { AudioLines, CircleAlert } from "lucide-react";
 import { useEffect, useState } from "react";
+import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
   Card,
+  CardAction,
   CardContent,
   CardDescription,
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
+import {
+  Empty,
+  EmptyDescription,
+  EmptyHeader,
+  EmptyMedia,
+  EmptyTitle,
+} from "@/components/ui/empty";
 import { useListenPlayback } from "@/hooks/use-listen-playback";
 import type { ConnectedDevice, DeviceStatusSnapshot } from "@/lib/device-registry";
+import { cn } from "@/lib/utils";
 
 const STATUS_POLL_MS = 400;
 const VOICE_LEVEL = 0.12;
@@ -19,6 +30,7 @@ const LIVE_MS = 400;
 
 type ListenMonitorProps = {
   wsPort: number;
+  className?: string;
 };
 
 function modeLabel(mode: string): string {
@@ -51,7 +63,7 @@ function listenLabel(device: ConnectedDevice | undefined, now: number): {
   return { text: "未开始听", live: false, voice: false };
 }
 
-export function ListenMonitor({ wsPort }: ListenMonitorProps) {
+export function ListenMonitor({ wsPort, className }: ListenMonitorProps) {
   const [status, setStatus] = useState<DeviceStatusSnapshot | null>(null);
   const [now, setNow] = useState(() => Date.now());
   const [monitor, setMonitor] = useState(false);
@@ -140,35 +152,41 @@ export function ListenMonitor({ wsPort }: ListenMonitorProps) {
   const levelPct = Math.round((device?.level ?? 0) * 100);
 
   return (
-    <Card>
+    <Card className={cn("md:h-full md:min-h-0 md:overflow-hidden", className)}>
       <CardHeader>
-        <div className="flex items-start justify-between gap-3">
-          <div className="space-y-1.5">
-            <CardTitle>听筒监听</CardTitle>
-            <CardDescription>
-              试听会先去工频哼声和底噪，再由 Worker / AudioWorklet 拉流播放。
-            </CardDescription>
-          </div>
+        <CardTitle>听筒监听</CardTitle>
+        <CardDescription>
+          试听会先去工频哼声和底噪，再由 Worker / AudioWorklet 拉流播放。
+        </CardDescription>
+        <CardAction>
           {label.voice ? (
             <Badge variant="connected">
-              <span className="size-1.5 animate-pulse rounded-full bg-emerald-500" aria-hidden />
+              <span className="size-1.5 animate-pulse rounded-full bg-current" aria-hidden />
               {label.text}
             </Badge>
           ) : label.live ? (
             <Badge variant="live">
-              <span className="size-1.5 rounded-full bg-amber-500" aria-hidden />
+              <span className="size-1.5 rounded-full bg-current" aria-hidden />
               {label.text}
             </Badge>
           ) : (
             <Badge variant="offline">{label.text}</Badge>
           )}
-        </div>
+        </CardAction>
       </CardHeader>
-      <CardContent className="space-y-4">
+      <CardContent className="flex min-h-0 flex-col gap-3 md:flex-1">
         {!device ? (
-          <p className="text-sm leading-6 text-muted-foreground">
-            先按 BOOT 连上 WebSocket，这里才会开始刷音量。
-          </p>
+          <Empty className="gap-3 border-0 p-4 md:flex-1 md:p-6">
+            <EmptyHeader>
+              <EmptyMedia variant="icon">
+                <AudioLines />
+              </EmptyMedia>
+              <EmptyTitle>没有在线设备</EmptyTitle>
+              <EmptyDescription>
+                先按 BOOT 连上 WebSocket，这里才会开始刷音量。
+              </EmptyDescription>
+            </EmptyHeader>
+          </Empty>
         ) : (
           <>
             <div className="flex flex-wrap gap-2">
@@ -204,7 +222,11 @@ export function ListenMonitor({ wsPort }: ListenMonitorProps) {
               </Button>
             </div>
             {actionError || streamError ? (
-              <p className="text-xs text-muted-foreground">{actionError || streamError}</p>
+              <Alert variant="destructive">
+                <CircleAlert />
+                <AlertTitle>试听出错</AlertTitle>
+                <AlertDescription>{actionError || streamError}</AlertDescription>
+              </Alert>
             ) : null}
             {monitor && !paused ? (
               <p className="text-xs text-muted-foreground">
@@ -223,18 +245,18 @@ export function ListenMonitor({ wsPort }: ListenMonitorProps) {
               </p>
             ) : null}
 
-            <div className="grid gap-3 text-sm sm:grid-cols-3">
-              <div className="rounded-lg bg-muted px-3 py-3">
+            <div className="grid gap-2 text-sm sm:grid-cols-3">
+              <div className="rounded-lg bg-muted px-3 py-2">
                 <p className="text-xs text-muted-foreground">模式</p>
-                <p className="mt-1">{modeLabel(device.listenMode)}</p>
+                <p className="mt-1 truncate">{modeLabel(device.listenMode)}</p>
               </div>
-              <div className="rounded-lg bg-muted px-3 py-3">
+              <div className="rounded-lg bg-muted px-3 py-2">
                 <p className="text-xs text-muted-foreground">本段 Opus</p>
                 <p className="mt-1 font-mono">
                   {device.opusFrames} 帧 · {device.framesPerSec} 帧/秒
                 </p>
               </div>
-              <div className="rounded-lg bg-muted px-3 py-3">
+              <div className="rounded-lg bg-muted px-3 py-2">
                 <p className="text-xs text-muted-foreground">最近一帧</p>
                 <p className="mt-1 font-mono">
                   {device.lastOpusBytes ? `${device.lastOpusBytes} B` : "—"} · 音量 {levelPct}%
@@ -242,23 +264,23 @@ export function ListenMonitor({ wsPort }: ListenMonitorProps) {
               </div>
             </div>
 
-            <div>
-              <div className="mb-2 flex items-center justify-between text-xs text-muted-foreground">
+            <div className="flex min-h-0 flex-1 flex-col gap-2">
+              <div className="flex items-center justify-between text-xs text-muted-foreground">
                 <span>实时音量</span>
                 <span>{levelPct}%</span>
               </div>
-              <div className="h-3 overflow-hidden rounded-full bg-muted">
+              <div className="h-2 overflow-hidden rounded-full bg-muted">
                 <div
-                  className="h-full rounded-full bg-accent transition-[width] duration-150"
+                  className="h-full rounded-full bg-primary transition-[width] duration-150"
                   style={{ width: `${levelPct}%` }}
                 />
               </div>
-              <div className="mt-3 flex h-12 items-end gap-0.5">
+              <div className="flex min-h-12 flex-1 items-end gap-0.5">
                 {(history.length > 0 ? history : [0]).map((value, index) => (
                   <div
                     key={index}
-                    className="flex-1 rounded-t bg-accent/80"
-                    style={{ height: `${Math.max(6, Math.round(value * 100))}%` }}
+                    className="min-h-1.5 flex-1 rounded-t bg-primary/80"
+                    style={{ height: `${Math.max(8, Math.round(value * 100))}%` }}
                   />
                 ))}
               </div>

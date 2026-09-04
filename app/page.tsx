@@ -1,16 +1,17 @@
-import { AppShell } from "@/components/app-shell";
-import { DeviceStatus } from "@/components/device-status";
-import { ListenMonitor } from "@/components/listen-monitor";
+import { AppShell } from '@/components/app-shell';
+import { DeviceStatus } from '@/components/device-status';
+import { ListenMonitor } from '@/components/listen-monitor';
+import { RealtimeTester } from '@/components/realtime-tester';
+import { ServiceEndpoints } from '@/components/service-endpoints';
 import {
-  Card,
-  CardContent,
-  CardDescription,
-  CardHeader,
-  CardTitle,
-} from "@/components/ui/card";
-import { getOtaUrl, getRealtimeConfig, getServerConfig, getUiUrl, getWebsocketUrl } from "@/lib/config";
+  getOtaUrl,
+  getRealtimeConfig,
+  getServerConfig,
+  getUiUrl,
+  getWebsocketUrl,
+} from '@/lib/config';
 
-export const dynamic = "force-dynamic";
+export const dynamic = 'force-dynamic';
 
 export default function Home() {
   const config = getServerConfig();
@@ -20,74 +21,50 @@ export default function Home() {
   const uiUrl = getUiUrl(config);
 
   return (
-    <AppShell otaUrl={otaUrl} wsUrl={wsUrl}>
-      <section className="space-y-2">
-        <p className="text-sm leading-7 text-muted-foreground">
-          设备 OTA 已指向{" "}
-          <code className="rounded bg-muted px-1.5 py-0.5 font-mono text-[13px] text-foreground">
-            {otaUrl}
-          </code>
-          。下面会轮询 WebSocket 连接，看有没有 ESP32 连上这台机器。
-        </p>
-      </section>
-
-      <DeviceStatus />
-
-      <ListenMonitor wsPort={config.wsPort} />
-
-      <div className="grid gap-4 sm:grid-cols-2">
-        <Card>
-          <CardHeader>
-            <CardTitle>OTA HTTP</CardTitle>
-            <CardDescription>固件用这条地址拿 WebSocket 配置，不会下发升级包。</CardDescription>
-          </CardHeader>
-          <CardContent>
-            <p className="break-all font-mono text-sm leading-6">{otaUrl}</p>
-            <p className="mt-3 text-xs text-muted-foreground">
-              监听 {config.otaPort} · GET / POST /xiaozhi/ota/
-            </p>
-          </CardContent>
-        </Card>
-
-        <Card>
-          <CardHeader>
-            <CardTitle>WebSocket</CardTitle>
-            <CardDescription>按 BOOT 后设备连上来，立刻回 hello，再收 listen / opus。</CardDescription>
-          </CardHeader>
-          <CardContent>
-            <p className="break-all font-mono text-sm leading-6">{wsUrl}</p>
-            <p className="mt-3 text-xs text-muted-foreground">
-              监听 {config.wsPort} · /xiaozhi/v1/
-            </p>
-          </CardContent>
-        </Card>
+    <AppShell>
+      <div className='grid grid-cols-1 gap-4 md:h-full md:min-h-0 md:flex-1 md:grid-cols-12 md:grid-rows-[minmax(0,1.1fr)_minmax(0,1fr)_auto]'>
+        <DeviceStatus className='md:col-span-7' />
+        <ListenMonitor
+          className='md:col-span-7'
+          wsPort={config.wsPort}
+        />
+        <RealtimeTester
+          className='md:col-span-5 md:col-start-8 md:row-span-2 md:row-start-1'
+          wsPort={config.wsPort}
+        />
+        <ServiceEndpoints
+          className='md:col-span-12'
+          items={[
+            {
+              label: 'OTA HTTP',
+              value: otaUrl,
+              hint: `监听 ${config.otaPort} · /xiaozhi/ota/`,
+            },
+            {
+              label: 'WebSocket',
+              value: wsUrl,
+              hint: `监听 ${config.wsPort} · /xiaozhi/v1/`,
+            },
+            {
+              label: '界面',
+              value: uiUrl,
+              hint: 'npm run dev 同时拉起 UI / OTA / WS',
+            },
+            {
+              label: '通告主机',
+              value: config.advertiseHost,
+              hint: '绑在 0.0.0.0，按局域网地址访问',
+            },
+            {
+              label: 'Qwen-Omni Realtime',
+              value: realtime.configured ? realtime.model : '未配置',
+              hint: realtime.configured
+                ? `音色 ${realtime.voice}`
+                : '填 DASHSCOPE_API_KEY 与 WORKSPACE_ID',
+            },
+          ]}
+        />
       </div>
-
-      <Card>
-        <CardHeader>
-          <CardTitle>当前进程</CardTitle>
-          <CardDescription>
-            npm run dev 会同时拉起 UI、OTA、WebSocket，都绑在 0.0.0.0。
-          </CardDescription>
-        </CardHeader>
-        <CardContent className="grid gap-3 text-sm sm:grid-cols-3">
-          <div className="rounded-lg bg-muted px-3 py-3">
-            <p className="text-xs text-muted-foreground">界面</p>
-            <p className="mt-1 break-all font-mono text-[13px]">{uiUrl}</p>
-          </div>
-          <div className="rounded-lg bg-muted px-3 py-3">
-            <p className="text-xs text-muted-foreground">通告主机</p>
-            <p className="mt-1 font-mono text-[13px]">{config.advertiseHost}</p>
-          </div>
-          <div className="rounded-lg bg-muted px-3 py-3">
-            <p className="text-xs text-muted-foreground">Qwen-Omni Realtime</p>
-            <p className="mt-1">{realtime.configured ? realtime.model : "未配置，走本地占位"}</p>
-            <p className="mt-1 text-xs text-muted-foreground">
-              {realtime.configured ? `音色 ${realtime.voice}` : "填 DASHSCOPE_API_KEY 与 WORKSPACE_ID"}
-            </p>
-          </div>
-        </CardContent>
-      </Card>
     </AppShell>
   );
 }

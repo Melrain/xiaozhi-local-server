@@ -2,6 +2,7 @@ class ListenPlaybackProcessor extends AudioWorkletProcessor {
   constructor() {
     super();
     this.srcRate = 16000;
+    this.mode = "live";
     this.capacity = 0;
     this.buffer = new Float32Array(0);
     this.readIndex = 0;
@@ -11,7 +12,7 @@ class ListenPlaybackProcessor extends AudioWorkletProcessor {
     this.last = 0;
     this.emptyBlocks = 0;
     this.phase = 0;
-    this.configure(this.srcRate);
+    this.configure(this.srcRate, this.mode);
 
     this.port.onmessage = (event) => {
       const message = event.data;
@@ -32,7 +33,7 @@ class ListenPlaybackProcessor extends AudioWorkletProcessor {
       return;
     }
     if (message.type === "hello" && message.sampleRate) {
-      this.configure(Number(message.sampleRate) || 16000);
+      this.configure(Number(message.sampleRate) || 16000, message.mode);
       return;
     }
     if (message.type === "pcm" && message.pcm) {
@@ -40,12 +41,14 @@ class ListenPlaybackProcessor extends AudioWorkletProcessor {
     }
   }
 
-  configure(srcRate) {
+  configure(srcRate, mode) {
     this.srcRate = srcRate;
-    this.capacity = Math.max(2048, Math.ceil(sampleRate * 0.35));
+    this.mode = mode === "queue" ? "queue" : "live";
+    const seconds = this.mode === "queue" ? 12 : 0.35;
+    this.capacity = Math.max(2048, Math.ceil(sampleRate * seconds));
     this.buffer = new Float32Array(this.capacity);
-    this.maxLag = Math.ceil(sampleRate * 0.08);
-    this.startThreshold = Math.ceil(sampleRate * 0.03);
+    this.maxLag = this.mode === "queue" ? this.capacity : Math.ceil(sampleRate * 0.08);
+    this.startThreshold = Math.ceil(sampleRate * (this.mode === "queue" ? 0.04 : 0.03));
     this.clear();
   }
 
@@ -92,7 +95,7 @@ class ListenPlaybackProcessor extends AudioWorkletProcessor {
 
     const ratio = sampleRate / this.srcRate;
     const outCount = Math.max(1, Math.round(samples.length * ratio));
-    if (this.size + outCount > this.maxLag) {
+    if (this.mode === "live" && this.size + outCount > this.maxLag) {
       this.drop(this.size + outCount - this.startThreshold);
     }
 
