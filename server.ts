@@ -1,6 +1,6 @@
 import { createServer } from "node:http";
 import next from "next";
-import { BIND_HOST, getServerConfig, getOtaUrl, getUiUrl, getWebsocketUrl } from "./lib/config";
+import { BIND_HOST, getRealtimeConfig, getServerConfig, getOtaUrl, getUiUrl, getWebsocketUrl } from "./lib/config";
 import { loadLocalEnv } from "./lib/load-env";
 import { startDenoise } from "./lib/denoise";
 import { startOtaServer } from "./lib/ota-server";
@@ -41,6 +41,12 @@ async function main(): Promise<void> {
   console.log(`  UI  ${getUiUrl(config)}  (bind ${BIND_HOST}:${config.uiPort})`);
   console.log(`  OTA ${getOtaUrl(config)}  (bind ${BIND_HOST}:${config.otaPort})`);
   console.log(`  WS  ${getWebsocketUrl(config)}  (bind ${BIND_HOST}:${config.wsPort})`);
+  const realtime = getRealtimeConfig();
+  console.log(
+    realtime.configured
+      ? `  Realtime ${realtime.model} voice=${realtime.voice}`
+      : "  Realtime disabled (stub) — set DASHSCOPE_API_KEY and DASHSCOPE_WORKSPACE_ID",
+  );
   for (const url of workerUrls) {
     console.log(`  Worker ${url}`);
   }

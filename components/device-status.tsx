@@ -123,6 +123,28 @@ export function DeviceStatus() {
         </div>
       </CardHeader>
       <CardContent className="space-y-4">
+        {status?.realtime ? (
+          <div className="rounded-lg border border-border bg-background px-3 py-3">
+            <div className="flex items-center justify-between gap-3">
+              <p className="text-sm font-medium">Qwen-Omni Realtime</p>
+              {status.realtime.configured ? (
+                <Badge variant={status.realtime.connected ? "connected" : "offline"}>
+                  {status.realtime.connected ? "已连接" : "未连接"}
+                </Badge>
+              ) : (
+                <Badge variant="offline">未配置</Badge>
+              )}
+            </div>
+            <p className="mt-2 text-xs leading-6 text-muted-foreground">
+              模型 {status.realtime.model || "-"}
+              {status.realtime.voice ? ` · 音色 ${status.realtime.voice}` : ""}
+            </p>
+            <p className="text-xs text-muted-foreground">
+              上次打断：{status.realtime.lastInterruptReason || "无"}
+            </p>
+          </div>
+        ) : null}
+
         {status === null && !error ? (
           <p className="text-sm text-muted-foreground">正在检查连接…</p>
         ) : null}
@@ -152,6 +174,15 @@ export function DeviceStatus() {
               Client {shortId(device.clientId)}
               {device.protocolVersion ? ` · 协议 ${device.protocolVersion}` : ""}
             </p>
+            {status?.realtime ? (
+              <p className="mt-1 text-xs leading-6 text-muted-foreground">
+                Realtime {device.realtimeConnected || status.realtime.connected ? "已连接" : "未连接"}
+                {status.realtime.model ? ` · ${status.realtime.model}` : ""}
+                {status.realtime.lastInterruptReason || device.lastInterruptReason
+                  ? ` · 上次打断 ${device.lastInterruptReason || status.realtime.lastInterruptReason}`
+                  : ""}
+              </p>
+            ) : null}
             <button
               type="button"
               onClick={() => void playTest()}

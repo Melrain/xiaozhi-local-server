@@ -1,5 +1,9 @@
 import { WebSocket } from "ws";
-import { patchConnection } from "./device-registry";
+import { isPlaying, patchConnection } from "./device-registry";
+import {
+  claimDownlink,
+  isDownlinkOwner,
+} from "./downlink-owner";
 import { audioFileToOpusFrames } from "./opus-audio";
 import {
   getOpenSession,
@@ -9,6 +13,10 @@ import {
 
 const FRAME_MS = 60;
 const TEST_SENTENCE = "你好，我是小智本地服务。如果你能听到这段话，说明喇叭已经通了。";
+
+export function bumpPlayGeneration(sessionId: string): number {
+  return claimDownlink(sessionId, "none");
+}
 
 export type PlayResult = {
   ok: boolean;
@@ -37,23 +45,46 @@ export async function playOpusToSession(
     throw new Error("device socket is not open");
   }
 
+  const { interruptRealtime } = await import("./realtime-bridge");
+  interruptRealtime(sessionId, "play_test");
+
+  const generation = claimDownlink(sessionId, "play");
   patchConnection(sessionId, { playing: true });
   sendJson(ws, { session_id: sessionId, type: "tts", state: "start" });
   sendJson(ws, { session_id: sessionId, type: "tts", state: "sentence_start", text });
 
   try {
     for (const frame of frames) {
+      if (!isDownlinkOwner(sessionId, generation, "play")) {
+        console.log(`[PLAY] interrupted session_id=${sessionId}`);
+        return;
+      }
       if (ws.readyState !== WebSocket.OPEN) {
         throw new Error("socket closed while sending audio");
       }
       ws.send(frame);
       await sleep(FRAME_MS);
     }
+    if (!isDownlinkOwner(sessionId, generation, "play")) return;
     sendJson(ws, { session_id: sessionId, type: "tts", state: "stop" });
     console.log(`[PLAY] sent ${frames.length} opus frames session_id=${sessionId}`);
   } finally {
-    patchConnection(sessionId, { playing: false });
+    if (isDownlinkOwner(sessionId, generation, "play")) {
+      claimDownlink(sessionId, "none");
+      patchConnection(sessionId, { playing: false });
+    }
   }
+}
+
+export function interruptPlayback(sessionId: string): boolean {
+  bumpPlayGeneration(sessionId);
+  if (!isPlaying(sessionId)) return false;
+  const ws = getSessionSocket(sessionId);
+  if (ws && ws.readyState === WebSocket.OPEN) {
+    sendJson(ws, { session_id: sessionId, type: "tts", state: "stop" });
+  }
+  patchConnection(sessionId, { playing: false });
+  return true;
 }
 
 export async function playAudioFileToDevice(

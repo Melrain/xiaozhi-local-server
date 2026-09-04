@@ -1,4 +1,5 @@
 import { denoiseBackend, isDenoiseEnabled } from "./denoise";
+import { getRealtimeStatus, type RealtimeStatus } from "./realtime-status";
 
 const STORE_KEY = Symbol.for("xiaozhi.device-registry");
 
@@ -20,6 +21,8 @@ export type ConnectedDevice = {
   level: number;
   framesPerSec: number;
   levelHistory: number[];
+  realtimeConnected?: boolean;
+  lastInterruptReason?: string;
 };
 
 export type OtaSighting = {
@@ -36,6 +39,7 @@ export type DeviceStatusSnapshot = {
   recentOta: OtaSighting[];
   denoiseEnabled?: boolean;
   denoiseBackend?: "rnnoise" | "gate" | "off";
+  realtime?: RealtimeStatus;
 };
 
 const LEVEL_HISTORY = 40;
@@ -154,5 +158,6 @@ export function getDeviceStatus(): DeviceStatusSnapshot {
     recentOta,
     denoiseEnabled: isDenoiseEnabled(),
     denoiseBackend: denoiseBackend(),
+    realtime: getRealtimeStatus(),
   };
 }

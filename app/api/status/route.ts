@@ -1,13 +1,25 @@
-import { getServerConfig } from "@/lib/config";
+import { getRealtimeConfig, getServerConfig } from "@/lib/config";
 import type { DeviceStatusSnapshot } from "@/lib/device-registry";
 
 export const dynamic = "force-dynamic";
+
+function fallbackRealtime() {
+  const config = getRealtimeConfig();
+  return {
+    configured: config.configured,
+    connected: false,
+    model: config.model,
+    voice: config.voice,
+    lastInterruptReason: "",
+  };
+}
 
 const emptyStatus: DeviceStatusSnapshot = {
   ok: true,
   connectedCount: 0,
   devices: [],
   recentOta: [],
+  realtime: fallbackRealtime(),
 };
 
 export async function GET() {
@@ -24,6 +36,7 @@ export async function GET() {
       });
     }
     const data = (await res.json()) as DeviceStatusSnapshot;
+    if (!data.realtime) data.realtime = fallbackRealtime();
     return Response.json(data, {
       headers: { "Cache-Control": "no-store" },
     });

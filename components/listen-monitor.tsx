@@ -38,7 +38,13 @@ function listenLabel(device: ConnectedDevice | undefined, now: number): {
   const recent = device.lastOpusAt > 0 && now - device.lastOpusAt < LIVE_MS;
   const listening = device.listenState === "start";
   const voice = listening && recent && device.level >= VOICE_LEVEL;
-  if (device.playing) return { text: "正在播放，听筒暂停", live: false, voice: false };
+  if (device.playing) {
+    return {
+      text: device.realtimeConnected ? "正在播放（可打断）" : "正在播放，听筒暂停",
+      live: false,
+      voice: false,
+    };
+  }
   if (listening && voice) return { text: "听到声音", live: true, voice: true };
   if (listening && recent) return { text: "正在听（偏静音）", live: true, voice: false };
   if (listening) return { text: "听筒已开，等待帧", live: false, voice: false };
