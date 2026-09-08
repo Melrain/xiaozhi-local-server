@@ -169,7 +169,19 @@ test("session.update uses server VAD and uplink only after session.updated", asy
   const update = harness.bailianMessages.find((message) => message.type === "session.update");
   const session = update?.session as { turn_detection?: { type?: string; create_response?: boolean } };
   assert.equal(session?.turn_detection?.type, "server_vad");
-  assert.equal(session?.turn_detection?.create_response, true);
+  assert.equal(session?.turn_detection?.create_response, false);
+  getRealtimeBridge(harness.sessionId)?.setTurnMode("realtime");
+  await waitFor(
+    () =>
+      harness.bailianMessages.filter((message) => message.type === "session.update").length >= 2,
+  );
+  const realtimeUpdate = [...harness.bailianMessages]
+    .reverse()
+    .find((message) => message.type === "session.update");
+  const realtimeSession = realtimeUpdate?.session as {
+    turn_detection?: { create_response?: boolean };
+  };
+  assert.equal(realtimeSession?.turn_detection?.create_response, true);
 
   const before = harness.bailianMessages.filter((message) => message.type === "input_audio_buffer.append").length;
   getRealtimeBridge(harness.sessionId)?.appendUplinkPcm(Buffer.alloc(1920, 1), 16000);

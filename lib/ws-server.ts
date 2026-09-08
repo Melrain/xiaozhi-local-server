@@ -23,7 +23,12 @@ import {
   startDeviceMcp,
 } from "./device-mcp";
 import { disconnectDevice } from "./disconnect-device";
-import { clearIdleDisconnect, noteDeviceActivity, noteVoiceFrame } from "./idle-disconnect";
+import {
+  CONVERSATION_IDLE_MS,
+  clearIdleDisconnect,
+  noteDeviceActivity,
+  noteVoiceFrame,
+} from "./idle-disconnect";
 import { setListenPaused } from "./listen-control";
 import { interruptPlayback, playAudioFileToDevice, TEST_OGG_PATH, TEST_WAV_PATH } from "./play-audio";
 import { attachBrowserRealtime } from "./realtime-browser";
@@ -70,6 +75,7 @@ type XiaoZhiMessage = {
   type?: string;
   state?: string;
   mode?: string;
+  text?: string;
   reason?: string;
   session_id?: string;
   payload?: JsonRpc | string;
@@ -288,13 +294,26 @@ function handleText(ws: WebSocket, session: Session, raw: string): void {
     const listenMode = message.mode ?? getConnection(session.id)?.listenMode ?? "-";
     console.log(`[WS] json type=listen state=${listenState} mode=${listenMode}`);
     if (message.state === "start" || message.state === "detect") {
-      noteDeviceActivity(session.id);
+      noteDeviceActivity(session.id, CONVERSATION_IDLE_MS);
+    }
+    if (message.state === "detect") {
+      const text = message.text?.trim();
+      if (text) {
+        sendJson(ws, { session_id: session.id, type: "stt", text });
+        console.log(`[WS] wake word ${JSON.stringify(text)}`);
+      }
+      patchConnection(session.id, {
+        listenState: "detect",
+        listenMode: message.mode || getConnection(session.id)?.listenMode || "",
+      });
+      return;
     }
     if (message.state === "start") {
       session.opusFrames = 0;
       session.stubSentForBurst = false;
       clearIdle(session);
       resetUplinkMeter(session.id);
+      getRealtimeBridge(session.id)?.setTurnMode(message.mode ?? "auto");
       if (isPlaying(session.id)) {
         getRealtimeBridge(session.id)?.interrupt("listen_start");
         interruptPlayback(session.id);
@@ -577,7 +596,8 @@ export function startWebsocketServer(): void {
         session.stubSentForBurst = false;
         const frame = Buffer.isBuffer(data) ? data : Buffer.from(data as ArrayBuffer);
         const meter = measureUplinkFrame(session.id, frame);
-        noteVoiceFrame(session.id, meter.level);
+        noteDeviceActivity(session.id, CONVERSATION_IDLE_MS);
+        noteVoiceFrame(session.id, meter.level, CONVERSATION_IDLE_MS);
         const current = getConnection(session.id);
         patchConnection(session.id, {
           opusFrames: session.opusFrames,

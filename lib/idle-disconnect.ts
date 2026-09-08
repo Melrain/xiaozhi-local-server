@@ -3,6 +3,7 @@ import { getConnection, isSessionBusy } from "./device-registry";
 const STORE_KEY = Symbol.for("xiaozhi.idle-disconnect");
 
 export const IDLE_DISCONNECT_MS = 30_000;
+export const CONVERSATION_IDLE_MS = 180_000;
 export const IDLE_VOICE_LEVEL = 0.12;
 
 type Slot = {

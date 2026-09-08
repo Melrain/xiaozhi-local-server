@@ -97,7 +97,7 @@ class BrowserRealtimeSession {
 
     ws.on("open", () => {
       if (this.disposed || this.bailian !== ws) return;
-      this.sendBailian(buildRealtimeSessionUpdate(config));
+      this.sendBailian(buildRealtimeSessionUpdate(config, { createResponse: true }));
     });
 
     ws.on("message", (data) => {

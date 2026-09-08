@@ -15,7 +15,7 @@ import {
   resamplePcmS16le,
   UPLINK_BAILIAN_RATE,
 } from "./opus-audio";
-import { noteDeviceActivity } from "./idle-disconnect";
+import { CONVERSATION_IDLE_MS, clearIdleDisconnect, noteDeviceActivity } from "./idle-disconnect";
 import { interruptPlayback } from "./play-audio";
 import {
   getRealtimeStatus,
@@ -53,6 +53,7 @@ export type RealtimeBridge = {
   appendUplinkPcm(pcm: Buffer, sampleRate: number): void;
   interrupt(reason: string): void;
   requestTurn(reason: string): void;
+  setTurnMode(mode: string): void;
   dispose(): void;
   isConnected(): boolean;
 };
@@ -141,6 +142,7 @@ class SessionBridge implements RealtimeBridge {
   private serverVadSeen = false;
   private localSpeechSeen = false;
   private lastLoudAt = 0;
+  private turnMode: "auto" | "manual" | "realtime" = "auto";
 
   constructor(sessionId: string) {
     this.sessionId = sessionId;
@@ -154,7 +156,7 @@ class SessionBridge implements RealtimeBridge {
   private setResponding(value: boolean): void {
     this.responding = value;
     patchConnection(this.sessionId, { responding: value });
-    noteDeviceActivity(this.sessionId);
+    noteDeviceActivity(this.sessionId, CONVERSATION_IDLE_MS);
   }
 
   appendUplinkPcm(pcm: Buffer, sampleRate: number): void {
@@ -177,6 +179,14 @@ class SessionBridge implements RealtimeBridge {
     this.triggerTurn(reason);
   }
 
+  setTurnMode(mode: string): void {
+    const next = mode === "realtime" ? "realtime" : mode === "manual" ? "manual" : "auto";
+    if (next === this.turnMode) return;
+    this.turnMode = next;
+    console.log(`[REALTIME] turn mode=${next} session=${this.sessionId.slice(0, 8)}`);
+    if (this.isConnected()) this.sendSessionUpdate();
+  }
+
   interrupt(reason: string): void {
     const shouldCancel = this.ttsActive || this.responding || this.outbound.length > 0;
     interruptPlayback(this.sessionId);
@@ -197,6 +207,7 @@ class SessionBridge implements RealtimeBridge {
     this.uplinkQueueBytes = 0;
     this.clearTimers();
     this.stopDeviceTts();
+    clearIdleDisconnect(this.sessionId);
     const socket = this.ws;
     this.ws = null;
     if (socket && (socket.readyState === WebSocket.OPEN || socket.readyState === WebSocket.CONNECTING)) {
@@ -267,7 +278,11 @@ class SessionBridge implements RealtimeBridge {
   }
 
   private sendSessionUpdate(): void {
-    this.sendEvent(buildRealtimeSessionUpdate(getRealtimeConfig()));
+    this.sendEvent(
+      buildRealtimeSessionUpdate(getRealtimeConfig(), {
+        createResponse: this.turnMode === "realtime",
+      }),
+    );
   }
 
   private queueUplink(pcm: Buffer): void {
@@ -307,6 +322,7 @@ class SessionBridge implements RealtimeBridge {
   }
 
   private observeLocalVad(pcm: Buffer): void {
+    if (this.turnMode !== "realtime") return;
     if (this.serverVadSeen || this.responding || this.ttsActive) return;
     const level = pcmLevel(pcm);
     const now = Date.now();
@@ -488,7 +504,7 @@ class SessionBridge implements RealtimeBridge {
     this.audioFinished = false;
     this.downlinkGeneration = claimDownlink(this.sessionId, "realtime");
     patchConnection(this.sessionId, { playing: true });
-    noteDeviceActivity(this.sessionId);
+    noteDeviceActivity(this.sessionId, CONVERSATION_IDLE_MS);
     sendDeviceJson(this.sessionId, { session_id: this.sessionId, type: "tts", state: "start" });
     sendDeviceJson(this.sessionId, {
       session_id: this.sessionId,
@@ -559,7 +575,7 @@ class SessionBridge implements RealtimeBridge {
     this.setResponding(false);
     if (releaseDownlink(this.sessionId, this.downlinkGeneration, "realtime")) {
       patchConnection(this.sessionId, { playing: false });
-      noteDeviceActivity(this.sessionId);
+      noteDeviceActivity(this.sessionId, CONVERSATION_IDLE_MS);
     }
     console.log(`[REALTIME] tts stop session=${this.sessionId.slice(0, 8)}`);
   }
@@ -653,7 +669,7 @@ class SessionBridge implements RealtimeBridge {
       ...(ownedByPlay ? {} : { playing: false }),
       ...(reason ? { lastInterruptReason: reason } : {}),
     });
-    if (!ownedByPlay) noteDeviceActivity(this.sessionId);
+    if (!ownedByPlay) noteDeviceActivity(this.sessionId, CONVERSATION_IDLE_MS);
     if (reason) patchRealtimeStatus({ lastInterruptReason: reason });
   }
 
