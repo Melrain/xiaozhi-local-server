@@ -36,14 +36,18 @@ export default function Home() {
           className='md:col-span-12'
           items={[
             {
-              label: 'OTA HTTP',
+              label: 'OTA',
               value: otaUrl,
-              hint: `监听 ${config.otaPort} · /xiaozhi/ota/`,
+              hint: config.publicHost
+                ? '板子填这个 HTTPS 地址'
+                : `监听 ${config.otaPort} · /xiaozhi/ota/`,
             },
             {
               label: 'WebSocket',
               value: wsUrl,
-              hint: `监听 ${config.wsPort} · /xiaozhi/v1/`,
+              hint: config.publicHost
+                ? 'OTA JSON 会下发这条 wss'
+                : `监听 ${config.wsPort} · /xiaozhi/v1/`,
             },
             {
               label: '界面',
@@ -52,8 +56,10 @@ export default function Home() {
             },
             {
               label: '通告主机',
-              value: config.advertiseHost,
-              hint: '绑在 0.0.0.0，按局域网地址访问',
+              value: config.publicHost || config.advertiseHost,
+              hint: config.publicHost
+                ? '公网走 443；8000/8002 仅作回环'
+                : '绑在 0.0.0.0，按局域网地址访问',
             },
             {
               label: 'Qwen-Omni Realtime',

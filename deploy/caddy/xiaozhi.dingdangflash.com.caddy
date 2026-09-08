@@ -4,6 +4,16 @@
 xiaozhi.dingdangflash.com {
 	encode gzip zstd
 
+	@ota path /xiaozhi/ota /xiaozhi/ota/ /xiaozhi/ota/*
+	handle @ota {
+		reverse_proxy 127.0.0.1:8002 {
+			header_up Host {host}
+			header_up X-Forwarded-Proto {scheme}
+			header_up X-Real-IP {remote_host}
+			header_up X-Forwarded-For {remote_host}
+		}
+	}
+
 	@deviceWs path /listen-stream /listen-stream/ /realtime-test /realtime-test/ /xiaozhi/v1 /xiaozhi/v1/
 	handle @deviceWs {
 		reverse_proxy 127.0.0.1:8000

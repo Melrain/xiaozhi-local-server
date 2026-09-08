@@ -55,8 +55,8 @@ function firmwareVersionFromBody(raw: string): string {
   }
 }
 
-function buildOtaPayload(version: string, hostHeader = "") {
-  const websocketUrl = getWebsocketUrlForRequest(hostHeader);
+function buildOtaPayload(version: string, hostHeader = "", forwardedProto = "") {
+  const websocketUrl = getWebsocketUrlForRequest(hostHeader, getServerConfig(), forwardedProto);
   return {
     server_time: {
       timestamp: Date.now(),
@@ -122,7 +122,11 @@ async function handleOta(req: IncomingMessage, res: ServerResponse): Promise<voi
     }
   }
 
-  const payload = buildOtaPayload(version, header(req, "host"));
+  const payload = buildOtaPayload(
+    version,
+    header(req, "host"),
+    header(req, "x-forwarded-proto"),
+  );
   const deviceId = header(req, "device-id");
   const clientId = header(req, "client-id");
 

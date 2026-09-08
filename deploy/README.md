@@ -4,8 +4,8 @@
 |----|----|
 | 站点 | https://xiaozhi.dingdangflash.com |
 | UI 回环 | http://127.0.0.1:13500 |
-| 设备 OTA | http://38.207.177.67:8002/xiaozhi/ota/ |
-| 设备 WebSocket | ws://38.207.177.67:8000/xiaozhi/v1/ |
+| 设备 OTA | https://xiaozhi.dingdangflash.com/xiaozhi/ota/ |
+| 设备 WebSocket | wss://xiaozhi.dingdangflash.com/xiaozhi/v1/ |
 | 代码目录 | `/root/apps/xiaozhi-local-server` |
 | 进程 | systemd `xiaozhi`（`tsx server.ts`，同时拉起 UI / OTA / WS / workers） |
 | Caddy | `/etc/caddy/Caddyfile`（片段见 `caddy/xiaozhi.dingdangflash.com.caddy`） |
@@ -18,7 +18,7 @@
 |------|------|------|------|
 | A | `xiaozhi` | `38.207.177.67` | **DNS only（灰云）** |
 
-板子走的是明文 `http://IP:8002` 和 `ws://IP:8000`，不要给这两条记录开橙云。
+板子走 `https://xiaozhi.dingdangflash.com/xiaozhi/ota/`，OTA JSON 下发 `wss://xiaozhi.dingdangflash.com/xiaozhi/v1/`。DNS 必须灰云，否则 ESP32 不好过橙云。
 
 ## 持续部署
 

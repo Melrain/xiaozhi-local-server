@@ -14,6 +14,7 @@ export type ServerConfig = {
   otaPort: number;
   wsPort: number;
   uiPort: number;
+  publicHost: string;
 };
 
 export type RealtimeConfig = {
@@ -39,6 +40,7 @@ export function getServerConfig(): ServerConfig {
     otaPort: readInt("OTA_PORT", DEFAULT_OTA_PORT),
     wsPort: readInt("WS_PORT", DEFAULT_WS_PORT),
     uiPort: readInt("UI_PORT", DEFAULT_UI_PORT),
+    publicHost: process.env.PUBLIC_HOST?.trim() || "",
   };
 }
 
@@ -58,19 +60,35 @@ export function hostFromHeader(hostHeader: string): string {
 }
 
 export function getWebsocketUrl(config: ServerConfig = getServerConfig()): string {
+  if (config.publicHost) {
+    return `wss://${config.publicHost}/xiaozhi/v1/`;
+  }
   return `ws://${config.advertiseHost}:${config.wsPort}/xiaozhi/v1/`;
+}
+
+function requestIsHttps(host: string, forwardedProto: string, publicHost: string): boolean {
+  const proto = forwardedProto.trim().split(",")[0]?.trim().toLowerCase() ?? "";
+  if (proto === "https") return true;
+  return publicHost !== "" && host === publicHost;
 }
 
 /** Prefer the host the device just used for OTA, so a stale ADVERTISE_HOST cannot break audio. */
 export function getWebsocketUrlForRequest(
   hostHeader: string,
   config: ServerConfig = getServerConfig(),
+  forwardedProto = "",
 ): string {
   const host = hostFromHeader(hostHeader) || config.advertiseHost;
+  if (requestIsHttps(host, forwardedProto, config.publicHost)) {
+    return `wss://${config.publicHost || host}/xiaozhi/v1/`;
+  }
   return `ws://${host}:${config.wsPort}/xiaozhi/v1/`;
 }
 
 export function getOtaUrl(config: ServerConfig = getServerConfig()): string {
+  if (config.publicHost) {
+    return `https://${config.publicHost}/xiaozhi/ota/`;
+  }
   return `http://${config.advertiseHost}:${config.otaPort}/xiaozhi/ota/`;
 }
 
@@ -79,6 +97,9 @@ export function getListenStreamUrl(config: ServerConfig = getServerConfig()): st
 }
 
 export function getUiUrl(config: ServerConfig = getServerConfig()): string {
+  if (config.publicHost) {
+    return `https://${config.publicHost}/`;
+  }
   return `http://${config.advertiseHost}:${config.uiPort}/`;
 }
 
