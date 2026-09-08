@@ -1,0 +1,17 @@
+[Unit]
+Description=xiaozhi local server (Next.js UI + OTA + WebSocket + workers)
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=/root/apps/xiaozhi-local-server
+Environment=NODE_ENV=production
+Environment=NODE_OPTIONS=--max-old-space-size=1024
+EnvironmentFile=-/root/apps/xiaozhi-local-server/.env
+ExecStart=/bin/bash -lc 'exec ./node_modules/.bin/tsx server.ts'
+Restart=always
+RestartSec=5
+User=root
+
+[Install]
+WantedBy=multi-user.target

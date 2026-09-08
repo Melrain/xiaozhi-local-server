@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
+import { browserWebSocketUrl } from "@/lib/browser-ws";
 import {
   LISTEN_PLAYBACK_WORKLET_URL,
   MIC_CAPTURE_WORKLET_URL,
@@ -119,7 +120,7 @@ export function useRealtimeTester({ wsPort }: UseRealtimeTesterOptions) {
     playback.connect(ctx.destination);
     playbackRef.current = playback;
 
-    const url = `ws://${window.location.hostname}:${wsPort}/realtime-test`;
+    const url = browserWebSocketUrl("/realtime-test", wsPort, window.location);
     const socket = new WebSocket(url);
     socket.binaryType = "arraybuffer";
     socketRef.current = socket;

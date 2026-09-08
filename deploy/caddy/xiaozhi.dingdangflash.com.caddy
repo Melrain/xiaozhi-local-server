@@ -1,0 +1,20 @@
+# Snippet merged into /etc/caddy/Caddyfile
+# Site: xiaozhi.dingdangflash.com  (小智本地服务 · Next.js dashboard + workers)
+
+xiaozhi.dingdangflash.com {
+	encode gzip zstd
+
+	@deviceWs path /listen-stream /listen-stream/ /realtime-test /realtime-test/ /xiaozhi/v1 /xiaozhi/v1/
+	handle @deviceWs {
+		reverse_proxy 127.0.0.1:8000
+	}
+
+	handle {
+		reverse_proxy 127.0.0.1:13500 {
+			header_up Host {host}
+			header_up X-Real-IP {remote_host}
+			header_up X-Forwarded-For {remote_host}
+			header_up X-Forwarded-Proto {scheme}
+		}
+	}
+}

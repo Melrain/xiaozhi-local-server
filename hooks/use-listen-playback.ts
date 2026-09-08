@@ -1,6 +1,7 @@
 'use client';
 
 import { useEffect, useRef, useState } from 'react';
+import { browserWebSocketUrl } from '@/lib/browser-ws';
 import {
   LISTEN_PLAYBACK_WORKLET_URL,
   LISTEN_WS_WORKER_URL,
@@ -86,9 +87,11 @@ export function useListenPlayback({
         }
       };
 
-      const url = `ws://${
-        window.location.hostname
-      }:${wsPort}/listen-stream?session=${encodeURIComponent(activeSessionId)}`;
+      const url = browserWebSocketUrl(
+        `/listen-stream?session=${encodeURIComponent(activeSessionId)}`,
+        wsPort,
+        window.location,
+      );
       setStreamError('');
       setStreamState('connecting');
       worker.postMessage({ type: 'connect', url });
