@@ -12,7 +12,7 @@ const CONFIG = {
   configured: true,
 };
 
-test("device session.update waits for listen stop instead of auto-creating replies", () => {
+test("device session.update keeps create_response off so the bridge owns reply turns", () => {
   const event = buildRealtimeSessionUpdate(CONFIG);
   assert.equal(event.type, "session.update");
   const session = event.session as {

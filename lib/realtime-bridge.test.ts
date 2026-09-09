@@ -274,6 +274,106 @@ test("detect wake word sends STT + tts stop and starts a text greeting turn", as
   assert.equal(content?.[0]?.text, "嘿，你好呀");
 });
 
+test("auto mode speech_stopped starts a response.create without committing again", async () => {
+  const harness = await startHarness();
+  const bridge = getRealtimeBridge(harness.sessionId);
+  assert.ok(bridge);
+  bridge.appendUplinkPcm(loudPcm(8000), 16000);
+  await waitFor(() =>
+    harness.bailianMessages.some((message) => message.type === "input_audio_buffer.append"),
+  );
+  const createsBefore = harness.bailianMessages.filter(
+    (message) => message.type === "response.create",
+  ).length;
+  const commitsBefore = harness.bailianMessages.filter(
+    (message) => message.type === "input_audio_buffer.commit",
+  ).length;
+
+  harness.sendBailian({ type: "input_audio_buffer.speech_started" });
+  harness.sendBailian({ type: "input_audio_buffer.speech_stopped" });
+  await waitFor(
+    () =>
+      harness.bailianMessages.filter((message) => message.type === "response.create").length >
+      createsBefore,
+  );
+  assert.equal(
+    harness.bailianMessages.filter((message) => message.type === "response.create").length,
+    createsBefore + 1,
+  );
+  assert.equal(
+    harness.bailianMessages.filter((message) => message.type === "input_audio_buffer.commit")
+      .length,
+    commitsBefore,
+    "server VAD already committed; speech_stopped must not commit again",
+  );
+
+  harness.sendBailian({ type: "input_audio_buffer.speech_stopped" });
+  await sleep(80);
+  assert.equal(
+    harness.bailianMessages.filter((message) => message.type === "response.create").length,
+    createsBefore + 1,
+    "already-responding speech_stopped must not start a second turn",
+  );
+});
+
+test("realtime mode speech_stopped does not call response.create (create_response owns it)", async () => {
+  const harness = await startHarness();
+  const bridge = getRealtimeBridge(harness.sessionId);
+  assert.ok(bridge);
+  bridge.setTurnMode("realtime");
+  bridge.appendUplinkPcm(loudPcm(8000), 16000);
+  await waitFor(() =>
+    harness.bailianMessages.some((message) => message.type === "input_audio_buffer.append"),
+  );
+  const createsBefore = harness.bailianMessages.filter(
+    (message) => message.type === "response.create",
+  ).length;
+  harness.sendBailian({ type: "input_audio_buffer.speech_started" });
+  harness.sendBailian({ type: "input_audio_buffer.speech_stopped" });
+  await sleep(80);
+  assert.equal(
+    harness.bailianMessages.filter((message) => message.type === "response.create").length,
+    createsBefore,
+  );
+});
+
+test("speech_stopped after detect does not create a turn until the user speaks again", async () => {
+  const harness = await startHarness();
+  const bridge = getRealtimeBridge(harness.sessionId);
+  assert.ok(bridge);
+  applyListenDetect({
+    sessionId: harness.sessionId,
+    text: "你好小智",
+    sendJson: () => undefined,
+    enableGreeting: false,
+  });
+  await waitFor(() =>
+    harness.bailianMessages.some((message) => message.type === "input_audio_buffer.clear"),
+  );
+  const createsAfterDetect = harness.bailianMessages.filter(
+    (message) => message.type === "response.create",
+  ).length;
+
+  harness.sendBailian({ type: "input_audio_buffer.speech_stopped" });
+  await sleep(80);
+  assert.equal(
+    harness.bailianMessages.filter((message) => message.type === "response.create").length,
+    createsAfterDetect,
+    "wake-word speech_stopped must not start a Realtime turn",
+  );
+
+  bridge.appendUplinkPcm(loudPcm(8000), 16000);
+  await waitFor(() =>
+    harness.bailianMessages.some((message) => message.type === "input_audio_buffer.append"),
+  );
+  harness.sendBailian({ type: "input_audio_buffer.speech_stopped" });
+  await waitFor(
+    () =>
+      harness.bailianMessages.filter((message) => message.type === "response.create").length >
+      createsAfterDetect,
+  );
+});
+
 test("listen_stop after detect does not create a turn until the user speaks again", async () => {
   const harness = await startHarness();
   const bridge = getRealtimeBridge(harness.sessionId);
