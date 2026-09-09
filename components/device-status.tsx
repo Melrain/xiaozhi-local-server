@@ -191,7 +191,7 @@ export function DeviceStatus({ className }: DeviceStatusProps) {
       <CardHeader>
         <CardTitle>ESP32 设备</CardTitle>
         <CardDescription>
-          WebSocket 连上才算出在线。空闲 30 秒会自动断开，再说唤醒词即可连上。
+          WebSocket 连上才算出在线。空闲 15 秒会自动断开，再说唤醒词即可连上。
         </CardDescription>
         <CardAction>
           {error ? (

@@ -2,7 +2,13 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { WebSocket } from "ws";
 import { getConnection, patchConnection, removeConnection, upsertConnection } from "./device-registry";
-import { clearIdleDisconnect, noteDeviceActivity, noteVoiceFrame } from "./idle-disconnect";
+import {
+  CONVERSATION_IDLE_MS,
+  IDLE_DISCONNECT_MS,
+  clearIdleDisconnect,
+  noteDeviceActivity,
+  noteVoiceFrame,
+} from "./idle-disconnect";
 import { deleteSessionSocket, setSessionSocket } from "./session-sockets";
 
 function sleep(ms: number): Promise<void> {
@@ -46,6 +52,11 @@ function cleanup(sessionId: string) {
   deleteSessionSocket(sessionId);
   removeConnection(sessionId);
 }
+
+test("idle auto-disconnect timeouts are 15 seconds", () => {
+  assert.equal(IDLE_DISCONNECT_MS, 15_000);
+  assert.equal(CONVERSATION_IDLE_MS, 15_000);
+});
 
 test("idle disconnect kicks a silent session", async () => {
   const sessionId = "idle-kick";
