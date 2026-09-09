@@ -3,6 +3,7 @@ import { createServer } from "node:http";
 import { afterEach, test } from "node:test";
 import { WebSocket, WebSocketServer } from "ws";
 import { getConnection, removeConnection, upsertConnection } from "./device-registry";
+import { applyListenDetect } from "./listen-detect";
 import {
   attachRealtimeBridge,
   detachRealtimeBridge,
@@ -10,6 +11,12 @@ import {
   interruptRealtime,
 } from "./realtime-bridge";
 import { setSessionSocket } from "./session-sockets";
+
+function loudPcm(bytes = 16000): Buffer {
+  const pcm = Buffer.alloc(bytes);
+  for (let i = 0; i < pcm.length; i += 2) pcm.writeInt16LE(22000, i);
+  return pcm;
+}
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -234,4 +241,106 @@ test("bailian drop while speaking sends tts stop", async () => {
   await waitFor(() => ttsStates(harness.deviceMessages).includes("stop"));
   await waitFor(() => getConnection(harness.sessionId)?.lastInterruptReason === "bailian_drop");
   assert.equal(getConnection(harness.sessionId)?.playing, false);
+});
+
+test("detect wake word sends STT + tts stop and starts a text greeting turn", async () => {
+  const harness = await startHarness();
+  const sent: Array<Record<string, unknown>> = [];
+  const result = applyListenDetect({
+    sessionId: harness.sessionId,
+    text: "你好小智",
+    sendJson: (payload) => {
+      sent.push(payload as Record<string, unknown>);
+      harness.deviceMessages.push(payload as Record<string, unknown>);
+    },
+  });
+  assert.equal(result.kind, "wake-greet");
+  assert.equal(result.sendTtsStop, true);
+  assert.equal(result.greetedViaRealtime, true);
+  assert.equal(sent[0]?.type, "stt");
+  assert.equal(sent[0]?.text, "你好小智");
+  assert.equal(sent[1]?.type, "tts");
+  assert.equal(sent[1]?.state, "stop");
+
+  await waitFor(() =>
+    harness.bailianMessages.some((message) => message.type === "input_audio_buffer.clear"),
+  );
+  await waitFor(() =>
+    harness.bailianMessages.some((message) => message.type === "conversation.item.create"),
+  );
+  await waitFor(() => harness.bailianMessages.some((message) => message.type === "response.create"));
+  const item = harness.bailianMessages.find((message) => message.type === "conversation.item.create");
+  const content = (item?.item as { content?: Array<{ text?: string }> })?.content;
+  assert.equal(content?.[0]?.text, "嘿，你好呀");
+});
+
+test("listen_stop after detect does not create a turn until the user speaks again", async () => {
+  const harness = await startHarness();
+  const bridge = getRealtimeBridge(harness.sessionId);
+  assert.ok(bridge);
+  bridge.appendUplinkPcm(loudPcm(8000), 16000);
+  await waitFor(() =>
+    harness.bailianMessages.some((message) => message.type === "input_audio_buffer.append"),
+  );
+  applyListenDetect({
+    sessionId: harness.sessionId,
+    text: "你好小智",
+    sendJson: () => undefined,
+    enableGreeting: false,
+  });
+  await waitFor(() =>
+    harness.bailianMessages.some((message) => message.type === "input_audio_buffer.clear"),
+  );
+  const createsAfterDetect = harness.bailianMessages.filter(
+    (message) => message.type === "response.create",
+  ).length;
+  bridge.requestTurn("listen_stop");
+  await sleep(80);
+  assert.equal(
+    harness.bailianMessages.filter((message) => message.type === "response.create").length,
+    createsAfterDetect,
+    "wake-word listen_stop must not start a Realtime turn",
+  );
+
+  bridge.appendUplinkPcm(loudPcm(8000), 16000);
+  await waitFor(
+    () =>
+      harness.bailianMessages.filter((message) => message.type === "input_audio_buffer.append")
+        .length >= 2,
+  );
+  bridge.requestTurn("listen_stop");
+  await waitFor(() =>
+    harness.bailianMessages.filter((message) => message.type === "response.create").length >
+    createsAfterDetect,
+  );
+});
+
+test("response.done after audio always emits tts stop so listening can resume", async () => {
+  const harness = await startHarness();
+  harness.sendBailian({ type: "response.created", response: { id: "resp_done" } });
+  harness.sendBailian({
+    type: "response.audio.delta",
+    response_id: "resp_done",
+    delta: Buffer.alloc(4800).toString("base64"),
+  });
+  await waitFor(() => ttsStates(harness.deviceMessages).includes("start"));
+  harness.sendBailian({ type: "response.done", response: { id: "resp_done" } });
+  await waitFor(() => ttsStates(harness.deviceMessages).includes("stop"));
+  assert.equal(getConnection(harness.sessionId)?.playing, false);
+});
+
+test("output_audio event aliases still start and stop device TTS", async () => {
+  const harness = await startHarness();
+  harness.sendBailian({ type: "response.created", response: { id: "resp_alias" } });
+  harness.sendBailian({
+    type: "response.output_audio.delta",
+    response_id: "resp_alias",
+    delta: Buffer.alloc(4800).toString("base64"),
+  });
+  await waitFor(() => ttsStates(harness.deviceMessages).includes("start"));
+  harness.sendBailian({
+    type: "response.output_audio.done",
+    response_id: "resp_alias",
+  });
+  await waitFor(() => ttsStates(harness.deviceMessages).includes("stop"));
 });

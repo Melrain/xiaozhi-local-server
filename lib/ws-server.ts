@@ -29,6 +29,7 @@ import {
   noteDeviceActivity,
   noteVoiceFrame,
 } from "./idle-disconnect";
+import { applyListenDetect } from "./listen-detect";
 import { setListenPaused } from "./listen-control";
 import { interruptPlayback, playAudioFileToDevice, TEST_OGG_PATH, TEST_WAV_PATH } from "./play-audio";
 import { attachBrowserRealtime } from "./realtime-browser";
@@ -297,11 +298,14 @@ function handleText(ws: WebSocket, session: Session, raw: string): void {
       noteDeviceActivity(session.id, CONVERSATION_IDLE_MS);
     }
     if (message.state === "detect") {
-      const text = message.text?.trim();
-      if (text) {
-        sendJson(ws, { session_id: session.id, type: "stt", text });
-        console.log(`[WS] wake word ${JSON.stringify(text)}`);
-      }
+      const plan = applyListenDetect({
+        sessionId: session.id,
+        text: message.text,
+        sendJson: (payload) => sendJson(ws, payload),
+      });
+      console.log(
+        `[WS] detect ${plan.kind} text=${JSON.stringify(plan.sttText)} greet=${plan.greetedViaRealtime}`,
+      );
       patchConnection(session.id, {
         listenState: "detect",
         listenMode: message.mode || getConnection(session.id)?.listenMode || "",

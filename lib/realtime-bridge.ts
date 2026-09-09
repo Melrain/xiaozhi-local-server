@@ -54,6 +54,8 @@ export type RealtimeBridge = {
   interrupt(reason: string): void;
   requestTurn(reason: string): void;
   setTurnMode(mode: string): void;
+  acknowledgeDetect(): void;
+  startTextTurn(text: string): void;
   dispose(): void;
   isConnected(): boolean;
 };
@@ -143,6 +145,8 @@ class SessionBridge implements RealtimeBridge {
   private localSpeechSeen = false;
   private lastLoudAt = 0;
   private turnMode: "auto" | "manual" | "realtime" = "auto";
+  private needSpeechSinceDetect = false;
+  private pendingTextTurn: string | null = null;
 
   constructor(sessionId: string) {
     this.sessionId = sessionId;
@@ -167,6 +171,9 @@ class SessionBridge implements RealtimeBridge {
         ? pcm
         : resamplePcmS16le(pcm, sampleRate, UPLINK_BAILIAN_RATE);
     if (!input.length) return;
+    if (this.needSpeechSinceDetect && pcmLevel(input) >= LOCAL_VAD_LEVEL) {
+      this.needSpeechSinceDetect = false;
+    }
     this.observeLocalVad(input);
     if (!this.sessionReady || !this.isConnected()) {
       this.queueUplink(input);
@@ -176,7 +183,49 @@ class SessionBridge implements RealtimeBridge {
   }
 
   requestTurn(reason: string): void {
+    if (reason === "listen_stop" && this.needSpeechSinceDetect) {
+      this.appendedBytes = 0;
+      if (this.isConnected()) this.sendEvent({ type: "input_audio_buffer.clear" });
+      return;
+    }
     this.triggerTurn(reason);
+  }
+
+  acknowledgeDetect(): void {
+    this.needSpeechSinceDetect = true;
+    this.serverVadSeen = false;
+    this.localSpeechSeen = false;
+    this.lastLoudAt = 0;
+    this.appendedBytes = 0;
+    this.uplinkQueue = [];
+    this.uplinkQueueBytes = 0;
+    this.interrupt("detect");
+    if (this.isConnected()) this.sendEvent({ type: "input_audio_buffer.clear" });
+  }
+
+  startTextTurn(text: string): void {
+    const trimmed = text.trim();
+    if (!trimmed || this.disposed) return;
+    this.pendingTextTurn = trimmed;
+    this.tryStartPendingTextTurn();
+  }
+
+  private tryStartPendingTextTurn(): void {
+    const text = this.pendingTextTurn;
+    if (!text || this.disposed || !this.sessionReady || !this.isConnected()) return;
+    if (this.responding || this.ttsActive) return;
+    this.pendingTextTurn = null;
+    this.appendedBytes = 0;
+    console.log(`[REALTIME] text turn ${JSON.stringify(text)} session=${this.sessionId.slice(0, 8)}`);
+    this.sendEvent({
+      type: "conversation.item.create",
+      item: {
+        type: "message",
+        role: "user",
+        content: [{ type: "input_text", text }],
+      },
+    });
+    this.sendEvent({ type: "response.create" });
   }
 
   setTurnMode(mode: string): void {
@@ -316,6 +365,7 @@ class SessionBridge implements RealtimeBridge {
     if (this.sessionReady) return;
     this.sessionReady = true;
     this.flushUplinkQueue();
+    this.tryStartPendingTextTurn();
     patchConnection(this.sessionId, { realtimeConnected: true });
     refreshConnectedFlag();
     console.log(`[REALTIME] session ready session=${this.sessionId.slice(0, 8)}`);
@@ -385,9 +435,11 @@ class SessionBridge implements RealtimeBridge {
         console.log(`[REALTIME] response.created session=${this.sessionId.slice(0, 8)}`);
         break;
       case "response.audio.delta":
+      case "response.output_audio.delta":
         this.onAudioDelta(event);
         break;
       case "response.audio.done":
+      case "response.output_audio.done":
         if (!this.acceptOutput(event)) break;
         this.audioFinished = true;
         this.enqueueFrames(this.encoder.flush());
@@ -399,6 +451,7 @@ class SessionBridge implements RealtimeBridge {
         this.audioFinished = true;
         this.enqueueFrames(this.encoder.flush());
         this.finishTurnIfIdle();
+        this.tryStartPendingTextTurn();
         break;
       case "response.cancelled": {
         const cancelledId = eventResponseId(event) || this.activeResponseId;
