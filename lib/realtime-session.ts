@@ -24,8 +24,9 @@ export function buildRealtimeSessionUpdate(
         threshold: 0.2,
         prefix_padding_ms: 300,
         silence_duration_ms: 600,
-        // Device auto/manual turns end on firmware `listen stop`. Auto-creating
-        // a response on VAD makes TTS start during the wake word and mutes the mic.
+        // Keep create_response off for device auto/manual so wake-detect does
+        // not auto-start TTS. The bridge calls response.create on VAD
+        // speech_stopped (and firmware listen stop) instead.
         create_response: createResponse,
         interrupt_response: true,
       },

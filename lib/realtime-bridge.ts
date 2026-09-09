@@ -183,7 +183,10 @@ class SessionBridge implements RealtimeBridge {
   }
 
   requestTurn(reason: string): void {
-    if (reason === "listen_stop" && this.needSpeechSinceDetect) {
+    if (
+      this.needSpeechSinceDetect &&
+      (reason === "listen_stop" || reason === "speech_stopped")
+    ) {
       this.appendedBytes = 0;
       if (this.isConnected()) this.sendEvent({ type: "input_audio_buffer.clear" });
       return;
@@ -392,8 +395,12 @@ class SessionBridge implements RealtimeBridge {
     if (this.responding || this.ttsActive) return;
     if (this.appendedBytes < 3200) return;
     console.log(`[REALTIME] turn reason=${reason} session=${this.sessionId.slice(0, 8)}`);
-    this.sendEvent({ type: "input_audio_buffer.commit" });
+    // Server VAD already commits on speech_stopped; committing again errors.
+    if (reason !== "speech_stopped") {
+      this.sendEvent({ type: "input_audio_buffer.commit" });
+    }
     this.sendEvent({ type: "response.create" });
+    this.setResponding(true);
     this.appendedBytes = 0;
   }
 
@@ -526,6 +533,11 @@ class SessionBridge implements RealtimeBridge {
         break;
       case "input_audio_buffer.speech_stopped":
         console.log(`[REALTIME] speech_stopped session=${this.sessionId.slice(0, 8)}`);
+        // Auto/manual keep create_response false (wake-detect). Realtime VAD
+        // already auto-creates; calling response.create here would double-reply.
+        if (this.turnMode !== "realtime") {
+          this.requestTurn("speech_stopped");
+        }
         break;
       default:
         break;
